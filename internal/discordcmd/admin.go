@@ -41,6 +41,10 @@ func (h *Handler) command(ctx context.Context, in *interaction) string {
 		return h.ignore(ctx, admin, optionValue(opts, "github"))
 	case "unignore":
 		return h.unignore(ctx, admin, optionValue(opts, "github"))
+	case "watch":
+		return h.watch(ctx, in, admin, opts)
+	case "unwatch":
+		return h.unwatch(ctx, admin, opts)
 	}
 	return msgUnknown
 }
@@ -105,6 +109,13 @@ func (h *Handler) list(ctx context.Context) string {
 	lines := make([]string, len(links))
 	for i, l := range links {
 		lines[i] = fmt.Sprintf("• `%s` → <@%s>", l.GitHubLogin, l.DiscordID)
+	}
+	watches, err := h.store.ListWatches(ctx)
+	if err != nil {
+		return h.internal(ctx, "list watches", err)
+	}
+	if len(watches) > 0 {
+		lines = append(append(lines, "", "**Watchers**"), watcherLines(watches)...)
 	}
 	return bulleted(fmt.Sprintf("**Links (%d)**", len(links)), lines)
 }

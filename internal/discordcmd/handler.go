@@ -53,6 +53,10 @@ type Store interface {
 	Ignore(ctx context.Context, githubID int64, login, createdBy string) error
 	Unignore(ctx context.Context, login string) (store.Ignored, error)
 	ListIgnored(ctx context.Context) ([]store.Ignored, error)
+	SetWatch(ctx context.Context, w store.Watch) error
+	RemoveWatch(ctx context.Context, discordID, repo string) (store.Watch, error)
+	ListWatches(ctx context.Context) ([]store.Watch, error)
+	ListRepos(ctx context.Context) ([]string, error)
 }
 
 // Directory resolves GitHub users.

@@ -15,13 +15,21 @@ func (h *Handler) autocomplete(ctx context.Context, in *interaction) []choice {
 		return nil
 	}
 	sub, opts := in.subcommand()
-	var query string
+	var query, field string
 	for _, o := range opts {
 		if o.Focused {
-			query = strings.ToLower(o.stringValue())
+			query, field = strings.ToLower(o.stringValue()), o.Name
 		}
 	}
 
+	if field == "repo" {
+		repos, err := h.store.ListRepos(ctx)
+		if err != nil {
+			h.log.WarnContext(ctx, "autocomplete repos failed", "error", err)
+			return nil
+		}
+		return rankChoices(repos, query)
+	}
 	logins, err := h.candidateLogins(ctx, sub)
 	if err != nil {
 		h.log.WarnContext(ctx, "autocomplete lookup failed", "subcommand", sub, "error", err)

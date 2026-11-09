@@ -39,9 +39,24 @@ func TestRegisterCommands(t *testing.T) {
 	for _, o := range gotBody[0]["options"].([]any) {
 		subs[o.(map[string]any)["name"].(string)] = true
 	}
-	for _, want := range []string{"link", "unlink", "list", "unlinked", "ignore", "unignore"} {
+	for _, want := range []string{"link", "unlink", "list", "unlinked", "ignore", "unignore", "watch", "unwatch"} {
 		if !subs[want] {
 			t.Errorf("subcommand %q not registered", want)
+		}
+	}
+	for _, o := range gotBody[0]["options"].([]any) {
+		sub := o.(map[string]any)
+		if sub["name"] != "watch" {
+			continue
+		}
+		opts := sub["options"].([]any)
+		level := opts[1].(map[string]any)
+		if level["name"] != "level" || len(level["choices"].([]any)) != 3 {
+			t.Errorf("watch level option = %+v", level)
+		}
+		repo := opts[2].(map[string]any)
+		if repo["name"] != "repo" || repo["required"] == true || repo["autocomplete"] != true {
+			t.Errorf("watch repo option = %+v", repo)
 		}
 	}
 }

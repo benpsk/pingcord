@@ -11,6 +11,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/benpsk/pingcord/internal/store"
 )
 
 const (
@@ -29,6 +31,7 @@ type commandOption struct {
 	Description  string          `json:"description"`
 	Required     bool            `json:"required,omitempty"`
 	Autocomplete bool            `json:"autocomplete,omitempty"`
+	Choices      []choice        `json:"choices,omitempty"`
 	Options      []commandOption `json:"options,omitempty"`
 }
 
@@ -47,6 +50,18 @@ func githubOpt(desc string) commandOption {
 	return commandOption{Type: optString, Name: "github", Description: desc, Required: true, Autocomplete: true}
 }
 
+func levelOpt() commandOption {
+	opt := commandOption{Type: optString, Name: "level", Description: "How much activity to ping them for", Required: true}
+	for _, l := range []string{store.LevelNewPRs, store.LevelPRs, store.LevelAll} {
+		opt.Choices = append(opt.Choices, choice{Name: levelDescriptions[l], Value: l})
+	}
+	return opt
+}
+
+func repoOpt() commandOption {
+	return commandOption{Type: optString, Name: "repo", Description: "Repository (leave empty for the whole org)", Autocomplete: true}
+}
+
 // commands is the full /admin command tree.
 func commands() []commandDef {
 	sub := func(name, desc string, opts ...commandOption) commandOption {
@@ -63,6 +78,8 @@ func commands() []commandDef {
 			sub("unlinked", "Org members who don't have a link yet"),
 			sub("ignore", "Never ping a GitHub user", githubOpt("GitHub username to ignore")),
 			sub("unignore", "Allow pinging an ignored GitHub user again", githubOpt("Ignored GitHub username")),
+			sub("watch", "Ping someone for org or repo activity, even without a mention", userOpt(), levelOpt(), repoOpt()),
+			sub("unwatch", "Stop a watch (leave repo empty for the org-wide one)", userOpt(), repoOpt()),
 		},
 	}}
 }

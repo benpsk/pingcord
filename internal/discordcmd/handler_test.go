@@ -35,8 +35,38 @@ const (
 type fakeStore struct {
 	links   []store.Link
 	ignored []store.Ignored
+	watches []store.Watch
+	repos   []string
 	err     error
 }
+
+func (f *fakeStore) SetWatch(_ context.Context, w store.Watch) error {
+	if f.err != nil {
+		return f.err
+	}
+	for i, old := range f.watches {
+		if old.DiscordID == w.DiscordID && strings.EqualFold(old.Repo, w.Repo) {
+			f.watches[i] = w
+			return nil
+		}
+	}
+	f.watches = append(f.watches, w)
+	return nil
+}
+
+func (f *fakeStore) RemoveWatch(_ context.Context, discordID, repo string) (store.Watch, error) {
+	for i, w := range f.watches {
+		if w.DiscordID == discordID && strings.EqualFold(w.Repo, repo) {
+			f.watches = append(f.watches[:i], f.watches[i+1:]...)
+			return w, nil
+		}
+	}
+	return store.Watch{}, store.ErrNotFound
+}
+
+func (f *fakeStore) ListWatches(context.Context) ([]store.Watch, error) { return f.watches, f.err }
+
+func (f *fakeStore) ListRepos(context.Context) ([]string, error) { return f.repos, f.err }
 
 func (f *fakeStore) UpsertLink(_ context.Context, l store.Link) ([]store.Link, error) {
 	if f.err != nil {
@@ -605,5 +635,123 @@ func TestSlowAnnouncementDoesNotDelayReply(t *testing.T) {
 	hs.h.Wait()
 	if len(hs.ann.sent) != 1 {
 		t.Fatal("announcement should still be delivered after the reply")
+	}
+}
+
+// --- watchers ------------------------------------------------------------------
+
+func linkedHarness(t *testing.T) *harness {
+	hs := newHarness(t)
+	hs.store.links = []store.Link{{GitHubID: 1, GitHubLogin: "Alice", DiscordID: userID}}
+	return hs
+}
+
+func TestWatchOrgWide(t *testing.T) {
+	hs := linkedHarness(t)
+
+	code, resp := hs.post(t, adminCmd("watch", "user", userID, "level", "new-prs"))
+
+	expectReply(t, code, resp, "<@"+userID+">", "new PRs", "the whole org")
+	want := store.Watch{DiscordID: userID, Repo: "", Level: "new-prs", CreatedBy: adminID}
+	if len(hs.store.watches) != 1 || hs.store.watches[0] != want {
+		t.Fatalf("watches = %+v", hs.store.watches)
+	}
+	if len(hs.ann.sent) != 1 || !strings.Contains(hs.ann.sent[0].Content, "new PRs") {
+		t.Fatalf("announcement = %+v", hs.ann.sent)
+	}
+}
+
+func TestWatchRepo(t *testing.T) {
+	tests := []struct {
+		repo, wantRepo string
+	}{
+		{"api", "api"},
+		{"my-org/api", "api"},
+		{"MY-ORG/Web.App", "Web.App"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.repo, func(t *testing.T) {
+			hs := linkedHarness(t)
+
+			code, resp := hs.post(t, adminCmd("watch", "user", userID, "level", "all", "repo", tt.repo))
+
+			expectReply(t, code, resp, "all activity", "`"+tt.wantRepo+"`")
+			if len(hs.store.watches) != 1 || hs.store.watches[0].Repo != tt.wantRepo {
+				t.Fatalf("watches = %+v", hs.store.watches)
+			}
+		})
+	}
+}
+
+func TestWatchRejections(t *testing.T) {
+	tests := []struct {
+		name  string
+		opts  []string
+		setup func(*harness)
+		want  string
+	}{
+		{name: "not linked", opts: []string{"user", userID, "level", "prs"}, setup: func(h *harness) { h.store.links = nil }, want: "isn't linked"},
+		{name: "bot", opts: []string{"user", "999999999999999999", "level", "prs"}, want: "bot"},
+		{name: "unknown level", opts: []string{"user", userID, "level", "everything"}, want: "level"},
+		{name: "missing level", opts: []string{"user", userID}, want: "Missing"},
+		{name: "other org", opts: []string{"user", userID, "level", "prs", "repo", "other-org/api"}, want: "my-org"},
+		{name: "bad repo name", opts: []string{"user", userID, "level", "prs", "repo", "api; rm -rf"}, want: "isn't a valid repository"},
+		{name: "store down", opts: []string{"user", userID, "level", "prs"}, setup: func(h *harness) { h.store.err = errors.New("disk") }, want: "Something went wrong"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			hs := linkedHarness(t)
+			if tt.setup != nil {
+				tt.setup(hs)
+			}
+
+			code, resp := hs.post(t, adminCmd("watch", tt.opts...))
+
+			expectReply(t, code, resp, tt.want)
+			if len(hs.store.watches) != 0 || len(hs.ann.sent) != 0 {
+				t.Fatalf("rejected watch must not be stored or announced")
+			}
+		})
+	}
+}
+
+func TestUnwatch(t *testing.T) {
+	hs := linkedHarness(t)
+	hs.store.watches = []store.Watch{{DiscordID: userID, Repo: "api", Level: "all"}}
+
+	code, resp := hs.post(t, adminCmd("unwatch", "user", userID, "repo", "my-org/API"))
+	expectReply(t, code, resp, "no longer watches", "`api`")
+	if len(hs.store.watches) != 0 || len(hs.ann.sent) != 1 {
+		t.Fatalf("watches=%+v announcements=%d", hs.store.watches, len(hs.ann.sent))
+	}
+
+	code, resp = hs.post(t, adminCmd("unwatch", "user", userID))
+	expectReply(t, code, resp, "isn't watching", "the whole org")
+}
+
+func TestListShowsWatchers(t *testing.T) {
+	hs := linkedHarness(t)
+	hs.store.watches = []store.Watch{
+		{DiscordID: userID, Repo: "", Level: "new-prs"},
+		{DiscordID: userID, Repo: "api", Level: "all"},
+	}
+
+	code, resp := hs.post(t, adminCmd("list"))
+
+	expectReply(t, code, resp, "**Watchers**", "<@"+userID+"> new-prs (org) · all (api)")
+}
+
+func TestAutocompleteRepos(t *testing.T) {
+	hs := linkedHarness(t)
+	hs.store.repos = []string{"api", "mobile-app", "web-api"}
+
+	_, resp := hs.post(t, command(typeAutocomplete, adminID, guildID, "watch", "user", userID, "level", "prs", "repo*", "api"))
+
+	var got []string
+	for _, c := range resp.Data.Choices {
+		got = append(got, c.Value)
+	}
+	if strings.Join(got, ",") != "api,web-api" {
+		t.Fatalf("choices = %v", got)
 	}
 }
