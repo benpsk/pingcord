@@ -11,6 +11,7 @@ import (
 
 	"github.com/benpsk/pingcord/internal/config"
 	"github.com/benpsk/pingcord/internal/discord"
+	"github.com/benpsk/pingcord/internal/discordcmd"
 	"github.com/benpsk/pingcord/internal/githubapi"
 	"github.com/benpsk/pingcord/internal/notify"
 	"github.com/benpsk/pingcord/internal/server"
@@ -42,11 +43,20 @@ func serve(ctx context.Context, getenv func(string) string, logOut io.Writer) er
 	sender := discord.NewWebhookClient(cfg.Discord.WebhookURL, nil)
 	notifier := notify.New(st, dir, sender, notify.WithLogger(log), notify.WithIgnoreBots(cfg.IgnoreBots))
 
+	interactions := discordcmd.NewHandler(discordcmd.Config{
+		PublicKey: cfg.Discord.PublicKey,
+		GuildID:   cfg.Discord.GuildID,
+		Org:       cfg.GitHub.Org,
+		IsAdmin:   cfg.IsAdmin,
+	}, st, dir, sender, discordcmd.WithLogger(log))
+
 	go checkGitHubAccess(ctx, gh, log)
+	go registerCommands(ctx, cfg.Discord, log)
 
 	handler := server.NewHandler(server.Options{
 		WebhookSecret: cfg.GitHub.WebhookSecret,
 		Events:        notifier,
+		Interactions:  interactions,
 		Logger:        log,
 	})
 	return listen(ctx, server.NewHTTPServer(cfg.Addr, handler), log)
@@ -94,4 +104,17 @@ func checkGitHubAccess(ctx context.Context, gh *githubapi.Client, log *slog.Logg
 	default:
 		log.Info("github token ok", "org", gh.Org(), "expires", expiry)
 	}
+}
+
+// registerCommands installs /admin in the guild. Failure is logged, not
+// fatal: GitHub notifications keep working without the admin commands.
+func registerCommands(ctx context.Context, d config.Discord, log *slog.Logger) {
+	ctx, cancel := context.WithTimeout(ctx, startupCheckTimeout)
+	defer cancel()
+
+	if err := discordcmd.RegisterCommands(ctx, nil, d.APIBaseURL, d.AppID, d.GuildID, d.BotToken); err != nil {
+		log.Error("could not register /admin slash commands; check DISCORD_APP_ID, DISCORD_GUILD_ID, DISCORD_BOT_TOKEN and that the app is in the server", "error", err)
+		return
+	}
+	log.Info("registered /admin slash commands", "guild", d.GuildID)
 }

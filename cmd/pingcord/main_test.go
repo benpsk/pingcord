@@ -142,6 +142,7 @@ func TestRunServesUntilCancelled(t *testing.T) {
 		t.Fatalf("webhook status = %d; logs:\n%s", resp.StatusCode, logs.String())
 	}
 
+	waitFor(t, func() bool { mu.Lock(); defer mu.Unlock(); return cmdCalls > 0 })
 	cancel()
 	select {
 	case err := <-done:
@@ -156,6 +157,9 @@ func TestRunServesUntilCancelled(t *testing.T) {
 	defer mu.Unlock()
 	if !containsPrefix(ghPaths, "/gh/users/carol") {
 		t.Errorf("mention was not resolved via GitHub API; paths = %v", ghPaths)
+	}
+	if cmdCalls != 1 {
+		t.Errorf("slash command registration calls = %d, want 1; logs:\n%s", cmdCalls, logs.String())
 	}
 	if !strings.Contains(logs.String(), `"msg":"github event handled"`) {
 		t.Errorf("expected JSON log line for handled event; logs:\n%s", logs.String())
@@ -186,6 +190,17 @@ func waitHealthy(t *testing.T, base string) {
 		time.Sleep(20 * time.Millisecond)
 	}
 	t.Fatal("server never became healthy")
+}
+
+func waitFor(t *testing.T, cond func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for !cond() {
+		if time.Now().After(deadline) {
+			t.Fatal("condition not met in time")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 }
 
 func containsPrefix(list []string, prefix string) bool {

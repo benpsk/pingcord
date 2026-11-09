@@ -1,0 +1,549 @@
+package discordcmd
+
+import (
+	"bytes"
+	"context"
+	"crypto/ed25519"
+	"crypto/rand"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"log/slog"
+	"net/http"
+	"net/http/httptest"
+	"strconv"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/benpsk/pingcord/internal/discord"
+	"github.com/benpsk/pingcord/internal/githubapi"
+	"github.com/benpsk/pingcord/internal/store"
+)
+
+const (
+	adminID = "323456789012345678"
+	guildID = "223456789012345678"
+	userID  = "423456789012345678"
+)
+
+// --- fakes -----------------------------------------------------------------
+
+type fakeStore struct {
+	links   []store.Link
+	ignored []store.Ignored
+	err     error
+}
+
+func (f *fakeStore) UpsertLink(_ context.Context, l store.Link) error {
+	if f.err != nil {
+		return f.err
+	}
+	f.links = append(f.links, l)
+	return nil
+}
+
+func (f *fakeStore) DeleteLinkByDiscordID(_ context.Context, id string) (store.Link, error) {
+	for i, l := range f.links {
+		if l.DiscordID == id {
+			f.links = append(f.links[:i], f.links[i+1:]...)
+			return l, nil
+		}
+	}
+	return store.Link{}, store.ErrNotFound
+}
+
+func (f *fakeStore) ListLinks(context.Context) ([]store.Link, error) { return f.links, f.err }
+
+func (f *fakeStore) Ignore(_ context.Context, id int64, login, by string) error {
+	f.ignored = append(f.ignored, store.Ignored{GitHubID: id, GitHubLogin: login, CreatedBy: by})
+	return f.err
+}
+
+func (f *fakeStore) Unignore(_ context.Context, login string) (store.Ignored, error) {
+	for i, ig := range f.ignored {
+		if strings.EqualFold(ig.GitHubLogin, login) {
+			f.ignored = append(f.ignored[:i], f.ignored[i+1:]...)
+			return ig, nil
+		}
+	}
+	return store.Ignored{}, store.ErrNotFound
+}
+
+func (f *fakeStore) ListIgnored(context.Context) ([]store.Ignored, error) { return f.ignored, f.err }
+
+type fakeDir struct {
+	users   map[string]githubapi.User
+	members []githubapi.User
+	err     error
+}
+
+func (f *fakeDir) LookupUser(_ context.Context, login string) (githubapi.User, error) {
+	if f.err != nil {
+		return githubapi.User{}, f.err
+	}
+	u, ok := f.users[strings.ToLower(login)]
+	if !ok {
+		return githubapi.User{}, githubapi.ErrNotFound
+	}
+	return u, nil
+}
+
+func (f *fakeDir) OrgMembers(context.Context) ([]githubapi.User, error) { return f.members, f.err }
+
+type fakeAnnouncer struct{ sent []discord.Message }
+
+func (f *fakeAnnouncer) Send(_ context.Context, m discord.Message) error {
+	f.sent = append(f.sent, m)
+	return nil
+}
+
+// --- harness -----------------------------------------------------------------
+
+type harness struct {
+	h     *Handler
+	priv  ed25519.PrivateKey
+	store *fakeStore
+	dir   *fakeDir
+	ann   *fakeAnnouncer
+	now   time.Time
+}
+
+func newHarness(t *testing.T) *harness {
+	t.Helper()
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hs := &harness{
+		priv:  priv,
+		store: &fakeStore{},
+		dir: &fakeDir{
+			users: map[string]githubapi.User{"alice": {ID: 1, Login: "Alice"}, "bob": {ID: 2, Login: "bob"}, "dependabot": {ID: 9, Login: "dependabot"}},
+			members: []githubapi.User{
+				{ID: 1, Login: "Alice"}, {ID: 2, Login: "bob"}, {ID: 3, Login: "carol"}, {ID: 4, Login: "malice"},
+			},
+		},
+		ann: &fakeAnnouncer{},
+		now: time.Unix(1_800_000_000, 0),
+	}
+	hs.h = NewHandler(Config{
+		PublicKey: pub,
+		GuildID:   guildID,
+		Org:       "my-org",
+		IsAdmin:   func(id string) bool { return id == adminID },
+	}, hs.store, hs.dir, hs.ann,
+		WithLogger(slog.New(slog.NewTextHandler(io.Discard, nil))),
+		WithClock(func() time.Time { return hs.now }),
+	)
+	return hs
+}
+
+type response struct {
+	Type int `json:"type"`
+	Data struct {
+		Content         string                   `json:"content"`
+		Flags           int                      `json:"flags"`
+		AllowedMentions *discord.AllowedMentions `json:"allowed_mentions"`
+		Choices         []struct {
+			Name  string `json:"name"`
+			Value string `json:"value"`
+		} `json:"choices"`
+	} `json:"data"`
+}
+
+func (hs *harness) post(t *testing.T, body string) (int, response) {
+	t.Helper()
+	ts := strconv.FormatInt(hs.now.Unix(), 10)
+	sig := ed25519.Sign(hs.priv, []byte(ts+body))
+	req := httptest.NewRequest(http.MethodPost, "/discord/interactions", strings.NewReader(body))
+	req.Header.Set("X-Signature-Ed25519", hex.EncodeToString(sig))
+	req.Header.Set("X-Signature-Timestamp", ts)
+	rec := httptest.NewRecorder()
+
+	hs.h.ServeHTTP(rec, req)
+
+	var resp response
+	if rec.Code == http.StatusOK {
+		if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+			t.Fatalf("response not JSON: %q", rec.Body.String())
+		}
+		if ct := rec.Header().Get("Content-Type"); ct != "application/json" {
+			t.Fatalf("Content-Type = %q", ct)
+		}
+	}
+	return rec.Code, resp
+}
+
+// command builds an /admin <sub> interaction from the given caller.
+func command(typ int, caller, guild, sub string, opts ...string) string {
+	var options []string
+	for i := 0; i+1 < len(opts); i += 2 {
+		name, value := opts[i], opts[i+1]
+		focused := ""
+		if strings.HasSuffix(name, "*") {
+			name, focused = strings.TrimSuffix(name, "*"), `,"focused":true`
+		}
+		optType := 3
+		if name == "user" {
+			optType = 6
+		}
+		options = append(options, fmt.Sprintf(`{"name":%q,"type":%d,"value":%q%s}`, name, optType, value, focused))
+	}
+	return fmt.Sprintf(`{"type":%d,"id":"1","token":"t","guild_id":%q,"member":{"user":{"id":%q,"username":"admin"}},
+		"data":{"name":"admin","type":1,"options":[{"name":%q,"type":1,"options":[%s]}],
+		"resolved":{"users":{%q:{"id":%q,"username":"dev"},"999999999999999999":{"id":"999999999999999999","username":"somebot","bot":true}}}}}`,
+		typ, guild, caller, sub, strings.Join(options, ","), userID, userID)
+}
+
+func adminCmd(sub string, opts ...string) string {
+	return command(typeApplicationCommand, adminID, guildID, sub, opts...)
+}
+
+func expectReply(t *testing.T, code int, resp response, wantContains ...string) {
+	t.Helper()
+	if code != http.StatusOK || resp.Type != responseChannelMessage {
+		t.Fatalf("code=%d type=%d", code, resp.Type)
+	}
+	if resp.Data.Flags != flagEphemeral {
+		t.Errorf("reply should be ephemeral, flags=%d", resp.Data.Flags)
+	}
+	if resp.Data.AllowedMentions == nil || len(resp.Data.AllowedMentions.Parse) != 0 || len(resp.Data.AllowedMentions.Users) != 0 {
+		t.Errorf("reply must not ping anyone: %+v", resp.Data.AllowedMentions)
+	}
+	for _, w := range wantContains {
+		if !strings.Contains(resp.Data.Content, w) {
+			t.Errorf("content %q does not contain %q", resp.Data.Content, w)
+		}
+	}
+}
+
+// --- security ----------------------------------------------------------------
+
+func TestPing(t *testing.T) {
+	hs := newHarness(t)
+
+	code, resp := hs.post(t, `{"type":1}`)
+
+	if code != http.StatusOK || resp.Type != responsePong {
+		t.Fatalf("code=%d type=%d", code, resp.Type)
+	}
+}
+
+func TestSignatureRejected(t *testing.T) {
+	hs := newHarness(t)
+	body := `{"type":1}`
+	ts := strconv.FormatInt(hs.now.Unix(), 10)
+	valid := hex.EncodeToString(ed25519.Sign(hs.priv, []byte(ts+body)))
+
+	tests := []struct {
+		name, sig, ts, body string
+	}{
+		{"missing signature", "", ts, body},
+		{"not hex", "zz", ts, body},
+		{"wrong length", "abcd", ts, body},
+		{"tampered body", valid, ts, `{"type":2}`},
+		{"stale timestamp", hex.EncodeToString(ed25519.Sign(hs.priv, []byte("1000"+body))), "1000", body},
+		{"non-numeric timestamp", hex.EncodeToString(ed25519.Sign(hs.priv, []byte("abc"+body))), "abc", body},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(tt.body))
+			req.Header.Set("X-Signature-Ed25519", tt.sig)
+			req.Header.Set("X-Signature-Timestamp", tt.ts)
+			rec := httptest.NewRecorder()
+
+			hs.h.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusUnauthorized {
+				t.Fatalf("code = %d", rec.Code)
+			}
+		})
+	}
+}
+
+func TestOversizedBodyRejected(t *testing.T) {
+	hs := newHarness(t)
+	body := `{"type":1,"pad":"` + strings.Repeat("a", maxBody) + `"}`
+
+	code, _ := hs.post(t, body)
+
+	if code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("code = %d", code)
+	}
+}
+
+func TestMalformedInteraction(t *testing.T) {
+	hs := newHarness(t)
+
+	if code, _ := hs.post(t, `{"type":"x"}`); code != http.StatusBadRequest {
+		t.Fatalf("code = %d", code)
+	}
+	if code, _ := hs.post(t, `{"type":99}`); code != http.StatusBadRequest {
+		t.Fatalf("unknown type code = %d", code)
+	}
+}
+
+func TestNonAdminIsRefused(t *testing.T) {
+	hs := newHarness(t)
+
+	code, resp := hs.post(t, command(typeApplicationCommand, userID, guildID, "list"))
+
+	expectReply(t, code, resp, "Only pingcord admins")
+}
+
+func TestWrongGuildIsRefused(t *testing.T) {
+	hs := newHarness(t)
+
+	code, resp := hs.post(t, command(typeApplicationCommand, adminID, "999999999999999999", "list"))
+
+	expectReply(t, code, resp, "Only pingcord admins")
+}
+
+func TestDirectMessageIsRefused(t *testing.T) {
+	hs := newHarness(t)
+	body := fmt.Sprintf(`{"type":2,"user":{"id":%q},"data":{"name":"admin","options":[{"name":"list","type":1}]}}`, adminID)
+
+	code, resp := hs.post(t, body)
+
+	expectReply(t, code, resp, "Only pingcord admins")
+}
+
+func TestNonAdminAutocompleteIsEmpty(t *testing.T) {
+	hs := newHarness(t)
+
+	code, resp := hs.post(t, command(typeAutocomplete, userID, guildID, "link", "user", userID, "github*", "a"))
+
+	if code != http.StatusOK || resp.Type != responseAutocomplete || len(resp.Data.Choices) != 0 {
+		t.Fatalf("code=%d resp=%+v", code, resp)
+	}
+}
+
+// --- commands ----------------------------------------------------------------
+
+func TestLink(t *testing.T) {
+	hs := newHarness(t)
+
+	code, resp := hs.post(t, adminCmd("link", "user", userID, "github", "ALICE"))
+
+	expectReply(t, code, resp, "Linked", "`Alice`", "<@"+userID+">")
+	if len(hs.store.links) != 1 {
+		t.Fatalf("links = %+v", hs.store.links)
+	}
+	l := hs.store.links[0]
+	if l.GitHubID != 1 || l.GitHubLogin != "Alice" || l.DiscordID != userID || l.CreatedBy != adminID {
+		t.Fatalf("stored link = %+v", l)
+	}
+	if len(hs.ann.sent) != 1 || !strings.Contains(hs.ann.sent[0].Content, "Alice") {
+		t.Fatalf("announcement = %+v", hs.ann.sent)
+	}
+	am := hs.ann.sent[0].AllowedMentions
+	if am.Parse == nil || len(am.Parse) != 0 || len(am.Users) != 0 {
+		t.Fatalf("announcement must not ping: %+v", am)
+	}
+}
+
+func TestLinkErrors(t *testing.T) {
+	tests := []struct {
+		name  string
+		opts  []string
+		setup func(*harness)
+		want  string
+	}{
+		{name: "unknown github user", opts: []string{"user", userID, "github", "ghost"}, want: "not found"},
+		{name: "invalid github login", opts: []string{"user", userID, "github", "bad login!"}, want: "isn't a valid GitHub username"},
+		{name: "discord bot", opts: []string{"user", "999999999999999999", "github", "alice"}, want: "bot"},
+		{name: "missing option", opts: []string{"user", userID}, want: "Missing"},
+		{name: "github api down", opts: []string{"user", userID, "github", "alice"}, setup: func(h *harness) { h.dir.err = errors.New("timeout") }, want: "Something went wrong"},
+		{name: "store down", opts: []string{"user", userID, "github", "alice"}, setup: func(h *harness) { h.store.err = errors.New("disk full") }, want: "Something went wrong"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			hs := newHarness(t)
+			if tt.setup != nil {
+				tt.setup(hs)
+			}
+
+			code, resp := hs.post(t, adminCmd("link", tt.opts...))
+
+			expectReply(t, code, resp, tt.want)
+			if len(hs.ann.sent) != 0 {
+				t.Errorf("failed link should not be announced")
+			}
+		})
+	}
+}
+
+func TestUnlink(t *testing.T) {
+	hs := newHarness(t)
+	hs.store.links = []store.Link{{GitHubID: 1, GitHubLogin: "Alice", DiscordID: userID}}
+
+	code, resp := hs.post(t, adminCmd("unlink", "user", userID))
+	expectReply(t, code, resp, "Unlinked", "`Alice`")
+	if len(hs.store.links) != 0 || len(hs.ann.sent) != 1 {
+		t.Fatalf("links=%v announcements=%d", hs.store.links, len(hs.ann.sent))
+	}
+
+	code, resp = hs.post(t, adminCmd("unlink", "user", userID))
+	expectReply(t, code, resp, "isn't linked")
+}
+
+func TestList(t *testing.T) {
+	hs := newHarness(t)
+
+	code, resp := hs.post(t, adminCmd("list"))
+	expectReply(t, code, resp, "No links yet")
+
+	hs.store.links = []store.Link{{GitHubID: 1, GitHubLogin: "Alice", DiscordID: userID}}
+	code, resp = hs.post(t, adminCmd("list"))
+	expectReply(t, code, resp, "Links (1)", "`Alice` → <@"+userID+">")
+}
+
+func TestListIsTruncatedToDiscordLimit(t *testing.T) {
+	hs := newHarness(t)
+	for i := range 200 {
+		hs.store.links = append(hs.store.links, store.Link{GitHubID: int64(i + 1), GitHubLogin: fmt.Sprintf("user-number-%03d", i), DiscordID: fmt.Sprintf("1%017d", i)})
+	}
+
+	code, resp := hs.post(t, adminCmd("list"))
+
+	expectReply(t, code, resp, "more")
+	if n := len([]rune(resp.Data.Content)); n > maxReplyRunes {
+		t.Fatalf("reply has %d runes", n)
+	}
+}
+
+func TestUnlinked(t *testing.T) {
+	hs := newHarness(t)
+	hs.store.links = []store.Link{{GitHubID: 1, GitHubLogin: "Alice", DiscordID: userID}}
+	hs.store.ignored = []store.Ignored{{GitHubID: 4, GitHubLogin: "malice"}}
+
+	code, resp := hs.post(t, adminCmd("unlinked"))
+
+	expectReply(t, code, resp, "without a link (2)", "`bob`", "`carol`")
+	if strings.Contains(resp.Data.Content, "Alice") || strings.Contains(resp.Data.Content, "malice") {
+		t.Fatalf("linked/ignored users listed: %q", resp.Data.Content)
+	}
+
+	hs.store.links = append(hs.store.links, store.Link{GitHubID: 2}, store.Link{GitHubID: 3})
+	code, resp = hs.post(t, adminCmd("unlinked"))
+	expectReply(t, code, resp, "Everyone in my-org is linked")
+}
+
+func TestIgnoreAndUnignore(t *testing.T) {
+	hs := newHarness(t)
+
+	code, resp := hs.post(t, adminCmd("ignore", "github", "dependabot"))
+	expectReply(t, code, resp, "Ignoring", "`dependabot`")
+	if len(hs.store.ignored) != 1 || hs.store.ignored[0].GitHubID != 9 || hs.store.ignored[0].CreatedBy != adminID {
+		t.Fatalf("ignored = %+v", hs.store.ignored)
+	}
+
+	code, resp = hs.post(t, adminCmd("unignore", "github", "DEPENDABOT"))
+	expectReply(t, code, resp, "No longer ignoring", "`dependabot`")
+
+	code, resp = hs.post(t, adminCmd("unignore", "github", "dependabot"))
+	expectReply(t, code, resp, "isn't ignored")
+
+	if len(hs.ann.sent) != 2 {
+		t.Fatalf("announcements = %d, want 2", len(hs.ann.sent))
+	}
+}
+
+func TestIgnoreUnknownUser(t *testing.T) {
+	hs := newHarness(t)
+
+	code, resp := hs.post(t, adminCmd("ignore", "github", "ghost"))
+
+	expectReply(t, code, resp, "not found")
+}
+
+func TestUnknownSubcommand(t *testing.T) {
+	hs := newHarness(t)
+
+	code, resp := hs.post(t, adminCmd("explode"))
+
+	expectReply(t, code, resp, "Unknown command")
+}
+
+func TestUnknownTopLevelCommand(t *testing.T) {
+	hs := newHarness(t)
+	body := strings.Replace(adminCmd("list"), `"name":"admin"`, `"name":"other"`, 1)
+
+	code, resp := hs.post(t, body)
+
+	expectReply(t, code, resp, "Unknown command")
+}
+
+// --- autocomplete --------------------------------------------------------------
+
+func TestAutocompleteOrgMembers(t *testing.T) {
+	hs := newHarness(t)
+
+	code, resp := hs.post(t, command(typeAutocomplete, adminID, guildID, "link", "user", userID, "github*", "ali"))
+
+	if code != http.StatusOK || resp.Type != responseAutocomplete {
+		t.Fatalf("code=%d type=%d", code, resp.Type)
+	}
+	var names []string
+	for _, c := range resp.Data.Choices {
+		names = append(names, c.Value)
+	}
+	// Prefix matches first, then substring matches.
+	if strings.Join(names, ",") != "Alice,malice" {
+		t.Fatalf("choices = %v", names)
+	}
+}
+
+func TestAutocompleteEmptyQueryAndLimit(t *testing.T) {
+	hs := newHarness(t)
+	for i := range 40 {
+		hs.dir.members = append(hs.dir.members, githubapi.User{ID: int64(100 + i), Login: fmt.Sprintf("dev%02d", i)})
+	}
+
+	_, resp := hs.post(t, command(typeAutocomplete, adminID, guildID, "ignore", "github*", ""))
+
+	if len(resp.Data.Choices) != maxChoices {
+		t.Fatalf("choices = %d, want %d", len(resp.Data.Choices), maxChoices)
+	}
+}
+
+func TestAutocompleteUnignoreUsesIgnoredList(t *testing.T) {
+	hs := newHarness(t)
+	hs.store.ignored = []store.Ignored{{GitHubID: 9, GitHubLogin: "dependabot"}}
+
+	_, resp := hs.post(t, command(typeAutocomplete, adminID, guildID, "unignore", "github*", "dep"))
+
+	if len(resp.Data.Choices) != 1 || resp.Data.Choices[0].Value != "dependabot" {
+		t.Fatalf("choices = %+v", resp.Data.Choices)
+	}
+}
+
+func TestAutocompleteErrorReturnsNoChoices(t *testing.T) {
+	hs := newHarness(t)
+	hs.dir.err = errors.New("down")
+
+	code, resp := hs.post(t, command(typeAutocomplete, adminID, guildID, "link", "github*", "a"))
+
+	if code != http.StatusOK || len(resp.Data.Choices) != 0 {
+		t.Fatalf("code=%d choices=%v", code, resp.Data.Choices)
+	}
+}
+
+func TestResponsesAreValidJSONWithNoNullChoices(t *testing.T) {
+	hs := newHarness(t)
+
+	ts := strconv.FormatInt(hs.now.Unix(), 10)
+	body := command(typeAutocomplete, userID, guildID, "link", "github*", "x")
+	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(body))
+	req.Header.Set("X-Signature-Ed25519", hex.EncodeToString(ed25519.Sign(hs.priv, []byte(ts+body))))
+	req.Header.Set("X-Signature-Timestamp", ts)
+	rec := httptest.NewRecorder()
+	hs.h.ServeHTTP(rec, req)
+
+	if !bytes.Contains(rec.Body.Bytes(), []byte(`"choices":[]`)) {
+		t.Fatalf("choices must be [] not null: %s", rec.Body.String())
+	}
+}
