@@ -236,7 +236,7 @@ LICENSE                        MIT
 | # | Phase | Done when |
 |---|---|---|
 | 0 | Scaffold: module, layout, Makefile (`test`, `lint`, `cover`), CI (`go vet`, golangci-lint incl. staticcheck + gosec, `go test -race`, govulncheck) | ✅ Done: all checks pass locally |
-| 1 | `mention`: parser | Table tests cover code blocks, quotes, emails, teams, punctuation, trailing hyphens, length limits |
+| 1 | `mention`: parser | ✅ Done: 59 table cases + fuzz test (11M runs, no panics), 98% coverage |
 | 2 | `config` + `store`: env validation, migrations, repository CRUD | Tests against a temporary SQLite file |
 | 3 | `githubhook`: signature check + event → recipients (catch-all + specific handlers + noise rules) | Real sample payloads for each event in §5 produce the expected recipients |
 | 4 | `githubapi`: org/team members, username→ID with cache | Tests against an `httptest` fake of the GitHub API |

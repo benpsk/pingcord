@@ -21,7 +21,7 @@ cover:
 	go test -race -coverprofile=coverage.out -covermode=atomic ./...
 	go tool cover -func=coverage.out | tail -1
 
-# Fails if total coverage is below COVER_MIN. Enforced in CI from phase 1 on.
+# Fails if total coverage is below COVER_MIN (enforced in CI).
 cover-check: cover
 	@total=$$(go tool cover -func=coverage.out | awk '/^total:/ {sub("%","",$$3); print $$3}'); \
 	echo "total coverage: $$total% (min $(COVER_MIN)%)"; \

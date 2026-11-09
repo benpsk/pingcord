@@ -20,8 +20,8 @@ jobs:
         run: go mod tidy -diff
       - name: Vet
         run: go vet ./...
-      - name: Test (race + coverage)
-        run: make cover
+      - name: Test (race + coverage >= 80%)
+        run: make cover-check
       - name: Build
         run: make build
 
