@@ -65,6 +65,7 @@ Discord /admin ──── POST /discord/interactions ─▶ Caddy (HTTPS) ─�
 | Comment on your PR, issue or discussion | its author |
 | Inline review comment | only people @mentioned in it (the author is pinged once by the review itself) |
 | Release published | people @mentioned in the release notes (once, and never for drafts) |
+| Anything a **watcher** watches | the watcher (see [Watchers](#watchers)) |
 
 Never pinged: the person who triggered the event, bots (configurable), users an
 admin has ignored, and anyone without a link (they show up in `/admin unlinked`).
@@ -158,6 +159,28 @@ change is posted to the channel as an audit line that doesn't ping anyone.
 | `/admin unlinked` | Org members without a link |
 | `/admin ignore github` | Never ping this GitHub user |
 | `/admin unignore github` | Undo `ignore` |
+| `/admin watch user level [repo]` | Make someone a **watcher** (see below) |
+| `/admin unwatch user [repo]` | Stop a watch (no repo = the org-wide one) |
+
+### Watchers
+
+A team lead may want to hear about activity even when nobody mentions them.
+`/admin watch` makes a linked user a watcher for the whole org, or for one
+repo when `repo` is given (`api` or `org/api`; it autocompletes from repos
+pingcord has seen).
+
+| Level | Pinged for |
+|---|---|
+| `new-prs` | PRs opened, or marked ready for review |
+| `prs` | the above, plus PRs merged / closed / reopened and every submitted review |
+| `all` | the above, plus comments, issues opened/closed/reopened, discussions, published releases |
+
+A person can have one org-wide watch and any number of per-repo watches. For
+each event the highest applicable level counts, so `new-prs` org-wide plus
+`all` on `api` means everything in `api` and only new PRs elsewhere. Draft
+PRs, pushes, edits, labels, inline review comments and bot activity never
+notify watchers, and nobody is notified about their own actions. Unlinking
+someone removes their watches.
 
 ## Configuration
 

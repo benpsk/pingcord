@@ -276,10 +276,21 @@ LICENSE                        MIT
 | Inline review comments without a submitted review event | Check against real payloads in phase 3 and adjust rule 5.3.3 if needed |
 | An admin's Discord account is compromised | The admin list lives in env (changing it needs server access); every change is announced in the channel |
 
+## 15b. Watchers (added after launch)
+
+Admin-configured watchers (`/admin watch user level [repo]`) are pinged for
+activity without being mentioned: org-wide or per repo, at `new-prs`, `prs` or
+`all`. Stored per Discord user in `watchers` (migration 002), joined with
+`links` at notify time; the highest level across a person's org-wide and repo
+watches applies. Events are classified in `githubhook/watch.go`. Drafts and
+bots are excluded; the actor is never pinged. Repo autocomplete uses
+`seen_repos`, filled from webhook events (the token can't list private repos).
+
 ## 16. Later (not v1)
 
 - Opt-in self-service `/link` with GitHub OAuth proof of ownership
 - Per-user preferences (mute event types, quiet hours, DM instead of the channel)
+- Watchers: optional bot activity, per-repo exclusions
 - GitHub App authentication
 - Multiple orgs or channels (route by repo)
 
