@@ -92,6 +92,9 @@ func TestParseRecipients(t *testing.T) {
 		},
 		{event: "commit_comment", fixture: "commit_comment_created", wantUsers: []string{"erin"}},
 		{event: "release", fixture: "release_published", wantUsers: []string{"carol", "erin"}},
+		// A direct publish sends both created and published; drafts send created.
+		// Only published pings, so nobody is pinged twice or for a draft.
+		{event: "release", fixture: "release_created"},
 	}
 
 	for _, tt := range tests {

@@ -19,6 +19,13 @@ var mentionActions = map[string]bool{
 	"published": true,
 }
 
+// skipMentionActions overrides mentionActions per event. GitHub sends
+// release.created for drafts and alongside release.published for a direct
+// publish, so only "published" may ping.
+var skipMentionActions = map[string]bool{
+	"release.created": true,
+}
+
 // Parse turns a webhook delivery into an Event. name is the X-GitHub-Event
 // header. Events that should notify nobody return an Event with no Targets
 // and no Mentions.
@@ -51,7 +58,9 @@ func Parse(name string, body []byte) (Event, error) {
 		ev.URL = primary.HTMLURL
 	}
 
-	ev.Mentions, ev.Excerpt = textMentions(&p, primary)
+	if !skipMentionActions[name+"."+p.Action] {
+		ev.Mentions, ev.Excerpt = textMentions(&p, primary)
+	}
 	ev.Targets = roleTargets(name, &p, ev.Subject)
 	ev.Users = collectUsers(&p, primary)
 	return ev, nil
