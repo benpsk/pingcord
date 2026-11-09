@@ -3,7 +3,7 @@
 > Ping the right developer in Discord when GitHub needs them: @mentions,
 > review requests, assignments, and activity on their own PRs. Nobody else gets pinged.
 
-Status: **implemented**; reviewed (code + security), all CRITICAL/HIGH/MEDIUM findings fixed · Last updated: 2026-11-09
+Status: **live** at `pingcord.lexerlabs.com`; reviewed (code + security), all CRITICAL/HIGH/MEDIUM findings fixed · Last updated: 2026-11-10
 
 ---
 
@@ -24,7 +24,7 @@ Status: **implemented**; reviewed (code + security), all CRITICAL/HIGH/MEDIUM fi
 - The events you tick in GitHub's webhook settings decide what's on. There's no notify config.
 - The GitHub ↔ Discord mapping survives renames on both platforms.
 - Admins manage the mapping from Discord, with no redeploy.
-- Self-hosted: Docker + Caddy on a VPS. Public, open-source repo.
+- Self-hosted: one static binary under systemd behind the server's shared host Caddy, auto-deployed from GitHub Actions (Docker optional). Public, open-source repo.
 
 **Non-goals (for now)**
 - Self-service `/link` for non-admins (spoofing risk).
@@ -37,7 +37,7 @@ Status: **implemented**; reviewed (code + security), all CRITICAL/HIGH/MEDIUM fi
 ```
 GitHub org webhook ──POST /github/webhook──┐
                                            ▼
-Discord slash cmds ─POST /discord/interactions─▶  Caddy (HTTPS) ─▶ pingcord (Go)
+Discord slash cmds ─POST /discord/interactions─▶  host Caddy (HTTPS) ─▶ 127.0.0.1:8090 pingcord (Go, systemd)
                                                                    │  ├─ verify signatures
                                                                    │  ├─ event → recipients
                                                                    │  ├─ SQLite (links, ignores, cache)
@@ -188,9 +188,10 @@ Team member lists are cached in memory for 10 minutes, not in the database.
 - **No leaks:** error responses never include internal details.
 - **Tokens:** the GitHub token is read-only and limited to member access.
 - **SQL:** parameterized queries only.
-- **Container:** distroless or scratch image, non-root user, read-only root filesystem, data
+- **Process:** systemd `DynamicUser` with strict sandboxing (only its state dir is writable).
+  Docker alternative: distroless, non-root, read-only root filesystem, data
   volume at `/data`.
-- **Network:** the app is reachable only through Caddy. No other port is exposed publicly.
+- **Network:** the app listens on 127.0.0.1 only; the host Caddy is the only way in.
 
 ## 10. Reliability
 
@@ -207,9 +208,10 @@ Team member lists are cached in memory for 10 minutes, not in the database.
 
 - **Go** (latest stable). The work is mostly network I/O, and the standard library covers
   HTTP, HMAC, Ed25519, JSON and slog.
-- **SQLite** via `modernc.org/sqlite` (pure Go, no cgo, simple Docker builds).
+- **SQLite** via `modernc.org/sqlite` (pure Go, no cgo: one static binary).
 - **No web framework.** `net/http` with Go 1.22+ routing patterns.
-- **Caddy** for automatic HTTPS.
+- **Caddy** on the host for automatic HTTPS, shared with other apps via `/etc/caddy/sites/*.caddy`.
+- **GitHub Actions** for CI and deploy (build in Actions, SSH to the server, health check with rollback).
 - **Testing:** standard `testing` plus `httptest`, with GitHub sample payloads in
   `internal/githubhook/testdata/`.
 
@@ -227,9 +229,9 @@ internal/discord/              webhook client (timeout, 429 retry)
 internal/discordcmd/           interactions: Ed25519 check, /admin handlers, autocomplete, registration
 internal/server/               HTTP routes + middleware (body limit, logging, recover)
 internal/githubhook/testdata/  sample webhook payloads
-Dockerfile
-docker-compose.yml             app + caddy, volumes
-Caddyfile.example
+deploy/                        systemd unit, Caddy site, install.sh, deploy guide
+.github/workflows/             ci.yml (reusable), deploy.yml (push to main)
+Dockerfile, docker-compose.yml optional Docker run on 127.0.0.1:8090
 .env.example
 README.md                      setup guide
 LICENSE                        MIT
@@ -247,10 +249,10 @@ LICENSE                        MIT
 | 5 | `notify` + `discord`: message builder + client | ✅ Done: message builder tests; fake Discord covers 429/5xx/token redaction |
 | 6 | `server`: end-to-end GitHub flow | ✅ Done: handler tests + end-to-end boot test (signed webhook against fake GitHub/Discord APIs) |
 | 7 | `discordcmd`: Ed25519 check, `/admin` commands, autocomplete, registration | ✅ Done: signed interaction tests, admin/guild/DM checks, autocomplete, registration |
-| 8 | Packaging: Dockerfile, compose + Caddy, `.env.example`, README setup guide | ⚠️ Files done; image build not verified locally (no Docker daemon). CI builds and smoke-tests it; real-org test pending |
+| 8 | Packaging and deploy: systemd unit, host Caddy site, auto-deploy workflow, Docker option, README | ✅ Done: deployed to pingcord.lexerlabs.com; webhook, `/admin` and HTTPS verified |
 | 9 | Review: code review + security review, coverage ≥ 80% | ✅ Done: 0 CRITICAL; 2 HIGH, 7 MEDIUM and the cheap LOW findings fixed; govulncheck clean; coverage ≥ 85% per package |
 
-## 14. Setup steps (will be in the README)
+## 14. Setup steps (full version: README + deploy/README.md)
 
 1. **Discord channel webhook:** Channel → Integrations → Webhooks → copy the URL.
 2. **Discord application:** Developer Portal → New Application. Copy the App ID and Public
@@ -262,7 +264,7 @@ LICENSE                        MIT
    `https://<domain>/github/webhook`, JSON, secret = `GITHUB_WEBHOOK_SECRET`. Events:
    Issues, Issue comments, Pull requests, Pull request reviews, Pull request review
    comments, plus Discussions / Commit comments if you want them.
-5. **VPS:** point DNS at the VPS, fill in `.env`, `docker compose up -d`.
+5. **Server:** host Caddy, `/etc/pingcord/pingcord.env`, systemd unit, deploy secrets; push to `main` (see `deploy/README.md`).
 6. **Onboard devs:** `/admin unlinked`, then `/admin link` for each person.
 
 ## 15. Risks and open questions
@@ -272,7 +274,7 @@ LICENSE                        MIT
 | The fine-grained PAT expires (≤ 1 year) | Log a warning at startup and when the token is close to expiry; README documents rotation. Later: support a GitHub App for tokens that don't expire |
 | Several reviews or comments in a burst cause many pings | Accepted for v1. Later: optional per-user debounce window |
 | Inline review comments without a submitted review event | Check against real payloads in phase 3 and adjust rule 5.3.3 if needed |
-| An admin's Discord account is compromised | The admin list lives in env (changing it needs VPS access); every change is announced in the channel |
+| An admin's Discord account is compromised | The admin list lives in env (changing it needs server access); every change is announced in the channel |
 
 ## 16. Later (not v1)
 
