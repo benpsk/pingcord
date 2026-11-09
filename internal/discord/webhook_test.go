@@ -218,3 +218,76 @@ func TestSendInvalidURL(t *testing.T) {
 		t.Fatalf("err = %v", err)
 	}
 }
+
+func TestSendSerializesConcurrentCalls(t *testing.T) {
+	var inFlight, maxInFlight atomic.Int64
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		n := inFlight.Add(1)
+		for {
+			m := maxInFlight.Load()
+			if n <= m || maxInFlight.CompareAndSwap(m, n) {
+				break
+			}
+		}
+		time.Sleep(5 * time.Millisecond)
+		inFlight.Add(-1)
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer srv.Close()
+	c := NewWebhookClient(srv.URL, srv.Client())
+
+	errs := make(chan error, 10)
+	for range 10 {
+		go func() { errs <- c.Send(context.Background(), testMessage()) }()
+	}
+	for range 10 {
+		if err := <-errs; err != nil {
+			t.Fatal(err)
+		}
+	}
+	if maxInFlight.Load() != 1 {
+		t.Fatalf("max concurrent requests = %d, want 1", maxInFlight.Load())
+	}
+}
+
+func TestSendWaitsWhenBucketIsExhausted(t *testing.T) {
+	f := newFakeWebhook(t, func(w http.ResponseWriter) {
+		w.Header().Set("X-RateLimit-Remaining", "0")
+		w.Header().Set("X-RateLimit-Reset-After", "1.25")
+		w.WriteHeader(http.StatusNoContent)
+	})
+	var slept []time.Duration
+	c := newTestClient(f, &slept)
+	now := time.Unix(1000, 0)
+	c.now = func() time.Time { return now }
+
+	if err := c.Send(context.Background(), testMessage()); err != nil {
+		t.Fatal(err)
+	}
+	if len(slept) != 0 {
+		t.Fatalf("first send should not wait, slept %v", slept)
+	}
+	if err := c.Send(context.Background(), testMessage()); err != nil {
+		t.Fatal(err)
+	}
+	if len(slept) != 1 || slept[0] != 1250*time.Millisecond {
+		t.Fatalf("second send should wait for the bucket reset, slept %v", slept)
+	}
+}
+
+func TestSendDoesNotWaitWhenBucketHasRoom(t *testing.T) {
+	f := newFakeWebhook(t, func(w http.ResponseWriter) {
+		w.Header().Set("X-RateLimit-Remaining", "3")
+		w.Header().Set("X-RateLimit-Reset-After", "1.25")
+		w.WriteHeader(http.StatusNoContent)
+	})
+	var slept []time.Duration
+	c := newTestClient(f, &slept)
+
+	_ = c.Send(context.Background(), testMessage())
+	_ = c.Send(context.Background(), testMessage())
+
+	if len(slept) != 0 {
+		t.Fatalf("slept %v", slept)
+	}
+}

@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"sync"
 	"time"
 )
 
@@ -58,11 +59,17 @@ type EmbedFooter struct {
 	Text string `json:"text"`
 }
 
-// WebhookClient posts messages to one channel webhook.
+// WebhookClient posts messages to one channel webhook. Sends are serialized
+// so concurrent events share Discord's per-webhook rate limit instead of
+// racing into 429s.
 type WebhookClient struct {
 	url   string
 	http  *http.Client
 	sleep func(context.Context, time.Duration) error
+	now   func() time.Time
+
+	mu        sync.Mutex
+	notBefore time.Time // bucket exhausted until then
 }
 
 // NewWebhookClient returns a client for the webhook URL. A nil httpClient
@@ -71,18 +78,28 @@ func NewWebhookClient(webhookURL string, httpClient *http.Client) *WebhookClient
 	if httpClient == nil {
 		httpClient = &http.Client{Timeout: defaultTimeout}
 	}
-	return &WebhookClient{url: webhookURL, http: httpClient, sleep: sleepCtx}
+	return &WebhookClient{url: webhookURL, http: httpClient, sleep: sleepCtx, now: time.Now}
 }
 
-// Send posts msg. On a rate limit it waits (up to maxRateLimitWait) and
-// retries once. Errors never include the webhook URL, which embeds a token.
+// Send posts msg. It waits for an exhausted rate-limit bucket to reset, and
+// on a 429 waits (up to maxRateLimitWait) and retries once. Errors never
+// include the webhook URL, which embeds a token.
 func (c *WebhookClient) Send(ctx context.Context, msg Message) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
 	if msg.AllowedMentions.Parse == nil {
 		msg.AllowedMentions.Parse = []string{}
 	}
 	body, err := json.Marshal(msg)
 	if err != nil {
 		return fmt.Errorf("discord: encode message: %w", err)
+	}
+
+	if wait := min(c.notBefore.Sub(c.now()), maxRateLimitWait); wait > 0 {
+		if err := c.sleep(ctx, wait); err != nil {
+			return fmt.Errorf("discord: waiting for rate limit: %w", err)
+		}
 	}
 
 	wait, err := c.post(ctx, body)
@@ -112,6 +129,7 @@ func (c *WebhookClient) post(ctx context.Context, body []byte) (time.Duration, e
 	}
 	defer func() { _ = resp.Body.Close() }()
 	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, maxErrorBody))
+	c.trackBucket(resp.Header)
 
 	switch {
 	case resp.StatusCode >= 200 && resp.StatusCode <= 299:
@@ -122,6 +140,18 @@ func (c *WebhookClient) post(ctx context.Context, body []byte) (time.Duration, e
 	default:
 		return 0, fmt.Errorf("discord: webhook returned %d: %s", resp.StatusCode, apiMessage(respBody))
 	}
+}
+
+// trackBucket records when the rate-limit bucket resets if it is exhausted.
+func (c *WebhookClient) trackBucket(h http.Header) {
+	if h.Get("X-RateLimit-Remaining") != "0" {
+		return
+	}
+	secs, err := strconv.ParseFloat(h.Get("X-RateLimit-Reset-After"), 64)
+	if err != nil || secs <= 0 {
+		return
+	}
+	c.notBefore = c.now().Add(time.Duration(secs * float64(time.Second)))
 }
 
 // stripURL removes the request URL (and its token) from transport errors.
