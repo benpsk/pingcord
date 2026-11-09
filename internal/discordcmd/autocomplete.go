@@ -8,8 +8,9 @@ import (
 // maxChoices is Discord's limit for autocomplete results.
 const maxChoices = 25
 
-// autocomplete suggests GitHub logins for the focused "github" option:
-// org members for link/ignore, ignored users for unignore.
+// autocomplete suggests GitHub logins for the focused "github" option (org
+// members for link/ignore, ignored users for unignore) and repository names
+// for the "repo" option.
 func (h *Handler) autocomplete(ctx context.Context, in *interaction) []choice {
 	if !h.isAuthorized(in) {
 		return nil
@@ -23,12 +24,7 @@ func (h *Handler) autocomplete(ctx context.Context, in *interaction) []choice {
 	}
 
 	if field == "repo" {
-		repos, err := h.store.ListRepos(ctx)
-		if err != nil {
-			h.log.WarnContext(ctx, "autocomplete repos failed", "error", err)
-			return nil
-		}
-		return rankChoices(repos, query)
+		return rankChoices(h.candidateRepos(ctx), query)
 	}
 	logins, err := h.candidateLogins(ctx, sub)
 	if err != nil {
@@ -36,6 +32,34 @@ func (h *Handler) autocomplete(ctx context.Context, in *interaction) []choice {
 		return nil
 	}
 	return rankChoices(logins, query)
+}
+
+// candidateRepos returns the org's repos from GitHub (most recently pushed
+// first), then repos seen in webhooks that GitHub didn't list. Either source
+// may fail; the other still gives suggestions.
+func (h *Handler) candidateRepos(ctx context.Context) []string {
+	fromGitHub, err := h.dir.OrgRepos(ctx)
+	if err != nil {
+		h.log.WarnContext(ctx, "autocomplete: listing org repos failed", "error", err)
+	}
+	seen, err := h.store.ListRepos(ctx)
+	if err != nil {
+		h.log.WarnContext(ctx, "autocomplete: listing seen repos failed", "error", err)
+	}
+
+	out := make([]string, 0, len(fromGitHub)+len(seen))
+	have := make(map[string]bool, cap(out))
+	// Two loops rather than append(fromGitHub, seen...): fromGitHub is the
+	// directory's cached slice and must not be written to.
+	for _, list := range [][]string{fromGitHub, seen} {
+		for _, name := range list {
+			if key := strings.ToLower(name); !have[key] {
+				have[key] = true
+				out = append(out, name)
+			}
+		}
+	}
+	return out
 }
 
 func (h *Handler) candidateLogins(ctx context.Context, sub string) ([]string, error) {

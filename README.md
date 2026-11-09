@@ -98,7 +98,13 @@ org, and "Manage Server" in your Discord server. It takes about 20 minutes.
 
 1. **Token.** Go to *Settings → Developer settings → Fine-grained tokens → Generate new token*:
    - **Resource owner:** your organization
-   - **Organization permissions → Members:** Read-only (nothing else)
+   - **Organization permissions → Members:** Read-only
+   - **Repository access:** All repositories. This adds the mandatory
+     *Metadata: Read-only*, so `/admin watch` can suggest private repos too. It
+     can't read code, issues or anything else. With *Public repositories*
+     only, the suggestions include just the public ones.
+
+   Nothing else.
 
    This is `GITHUB_TOKEN`. Fine-grained tokens expire, and pingcord logs a warning
    14 days before expiry.
@@ -190,7 +196,7 @@ startup and lists every problem it finds.
 | Variable | Required | Description |
 |---|:-:|---|
 | `GITHUB_WEBHOOK_SECRET` | ✓ | Shared secret for webhook signatures (≥ 16 chars) |
-| `GITHUB_TOKEN` | ✓ | Fine-grained PAT with org *Members: Read-only* |
+| `GITHUB_TOKEN` | ✓ | Fine-grained PAT with org *Members: Read-only*, all repositories (*Metadata: Read-only*) |
 | `GITHUB_ORG` | ✓ | Organization login |
 | `DISCORD_WEBHOOK_URL` | ✓ | Channel webhook for notifications |
 | `DISCORD_APP_ID` | ✓ | Discord application ID |
@@ -213,7 +219,8 @@ startup and lists every problem it finds.
 - **Who can be pinged:** `allowed_mentions` is always set, so a message can only
   ping the users it lists, never `@everyone` or roles. Text quoted from GitHub is
   defanged and can't ping anyone.
-- **GitHub token:** read-only and limited to member access. The webhook URL and
+- **GitHub token:** read-only: org members plus repository names
+  (*Metadata*), no code. The webhook URL and
   tokens never appear in logs or errors.
 - **Process isolation:** under systemd it runs as a throwaway unprivileged
   user that can only write its own state directory, listening on loopback
@@ -235,6 +242,7 @@ than a public issue.
 | GitHub deliveries show 415 | Set the webhook's content type to `application/json` |
 | GitHub deliveries show 502 | Discord rejected the message, or a requested review team couldn't be looked up; see the logs, fix it, then click *Redeliver* in GitHub |
 | GitHub deliveries show 503 | Too many deliveries arriving at once; click *Redeliver* |
+| `/admin watch` doesn't suggest private repos | Logs show `github repos visible` with a count. Give the token *Repository access: All repositories*, then restart pingcord |
 | Someone isn't pinged | `/admin unlinked`; logs list `unlinked` logins for each event |
 | `GITHUB_TOKEN cannot read org members` | The token's resource owner must be the org, with *Members: Read-only*; org owners may need to approve fine-grained tokens |
 

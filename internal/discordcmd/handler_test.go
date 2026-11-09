@@ -118,6 +118,8 @@ func (f *fakeStore) ListIgnored(context.Context) ([]store.Ignored, error) { retu
 type fakeDir struct {
 	users   map[string]githubapi.User
 	members []githubapi.User
+	repos   []string
+	repoErr error
 	err     error
 }
 
@@ -133,6 +135,8 @@ func (f *fakeDir) LookupUser(_ context.Context, login string) (githubapi.User, e
 }
 
 func (f *fakeDir) OrgMembers(context.Context) ([]githubapi.User, error) { return f.members, f.err }
+
+func (f *fakeDir) OrgRepos(context.Context) ([]string, error) { return f.repos, f.repoErr }
 
 type fakeAnnouncer struct {
 	mu    sync.Mutex
@@ -752,6 +756,40 @@ func TestAutocompleteRepos(t *testing.T) {
 		got = append(got, c.Value)
 	}
 	if strings.Join(got, ",") != "api,web-api" {
+		t.Fatalf("choices = %v", got)
+	}
+}
+
+func repoChoices(t *testing.T, hs *harness, query string) []string {
+	t.Helper()
+	_, resp := hs.post(t, command(typeAutocomplete, adminID, guildID, "watch", "user", userID, "level", "prs", "repo*", query))
+	var got []string
+	for _, c := range resp.Data.Choices {
+		got = append(got, c.Value)
+	}
+	return got
+}
+
+func TestAutocompleteReposListsOrgReposThenSeenOnes(t *testing.T) {
+	hs := linkedHarness(t)
+	hs.dir.repos = []string{"private-api", "api"}
+	hs.store.repos = []string{"API", "deleted-repo"}
+
+	got := repoChoices(t, hs, "")
+
+	// GitHub's order (most recently pushed first), then seen repos GitHub
+	// didn't list, without case-insensitive duplicates.
+	if strings.Join(got, ",") != "private-api,api,deleted-repo" {
+		t.Fatalf("choices = %v", got)
+	}
+}
+
+func TestAutocompleteReposFallsBackToSeenReposWhenGitHubFails(t *testing.T) {
+	hs := linkedHarness(t)
+	hs.dir.repoErr = errors.New("403 Resource not accessible")
+	hs.store.repos = []string{"api"}
+
+	if got := repoChoices(t, hs, "a"); strings.Join(got, ",") != "api" {
 		t.Fatalf("choices = %v", got)
 	}
 }

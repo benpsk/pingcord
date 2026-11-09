@@ -14,14 +14,15 @@ import (
 
 // fakeGitHub serves a tiny subset of the GitHub REST API.
 type fakeGitHub struct {
-	t        *testing.T
-	srv      *httptest.Server
-	calls    atomic.Int64
-	fail     atomic.Bool
-	members  []User // org members, served 2 per page
-	team     []User
-	expiry   atomic.Value // string
-	lastAuth atomic.Value
+	t         *testing.T
+	srv       *httptest.Server
+	calls     atomic.Int64
+	fail      atomic.Bool
+	members   []User // org members, served 2 per page
+	team      []User
+	expiry    atomic.Value // string
+	lastAuth  atomic.Value
+	lastQuery atomic.Value
 }
 
 func newFakeGitHub(t *testing.T) *fakeGitHub {
@@ -53,6 +54,10 @@ func newFakeGitHub(t *testing.T) *fakeGitHub {
 		}
 		end := min(start+2, len(f.members))
 		writeUsers(w, f.members[start:end])
+	})
+	mux.HandleFunc("GET /orgs/my-org/repos", func(w http.ResponseWriter, r *http.Request) {
+		f.lastQuery.Store(r.URL.RawQuery)
+		fmt.Fprint(w, `[{"name":"web","archived":false},{"name":"old","archived":true},{"name":"api"}]`)
 	})
 	mux.HandleFunc("GET /orgs/my-org/teams/backend/members", func(w http.ResponseWriter, _ *http.Request) {
 		writeUsers(w, f.team)
@@ -121,6 +126,25 @@ func TestClientOrgMembersPaginates(t *testing.T) {
 	}
 	if len(got) != 3 || got[2].Login != "carol" {
 		t.Fatalf("members = %+v", got)
+	}
+}
+
+func TestClientOrgReposSkipsArchivedAndIncludesPrivate(t *testing.T) {
+	f := newFakeGitHub(t)
+
+	got, err := f.client("my-org").OrgRepos(context.Background())
+
+	if err != nil {
+		t.Fatalf("OrgRepos: %v", err)
+	}
+	if strings.Join(got, ",") != "web,api" {
+		t.Fatalf("repos = %v, want web,api (archived skipped, API order kept)", got)
+	}
+	q := f.lastQuery.Load().(string)
+	for _, want := range []string{"type=all", "sort=pushed", "per_page=100"} {
+		if !strings.Contains(q, want) {
+			t.Errorf("query %q missing %s", q, want)
+		}
 	}
 }
 

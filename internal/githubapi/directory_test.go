@@ -168,6 +168,27 @@ func TestListsAreCachedAndServedStaleOnError(t *testing.T) {
 	}
 }
 
+func TestOrgReposAreCached(t *testing.T) {
+	d, f, _, now := newTestDirectory(t)
+	ctx := context.Background()
+
+	repos, err := d.OrgRepos(ctx)
+	if err != nil || len(repos) != 2 {
+		t.Fatalf("OrgRepos = %v, %v", repos, err)
+	}
+	_, _ = d.OrgRepos(ctx)
+	if f.calls.Load() != 1 {
+		t.Fatalf("calls = %d, want 1 (cached)", f.calls.Load())
+	}
+
+	*now = now.Add(11 * time.Minute)
+	f.fail.Store(true)
+	repos, err = d.OrgRepos(ctx)
+	if err != nil || len(repos) != 2 {
+		t.Fatalf("stale repos not served on error: %v, %v", repos, err)
+	}
+}
+
 func TestListErrorWithoutCacheIsReturned(t *testing.T) {
 	d, f, _, _ := newTestDirectory(t)
 	f.fail.Store(true)

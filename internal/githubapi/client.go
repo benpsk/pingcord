@@ -1,5 +1,6 @@
 // Package githubapi is a minimal, read-only GitHub REST client for the
-// lookups pingcord needs: username → ID, org members and team members.
+// lookups pingcord needs: username → ID, org members, team members and the
+// org's repositories.
 package githubapi
 
 import (
@@ -19,7 +20,7 @@ const (
 	apiVersion     = "2022-11-28"
 	userAgent      = "pingcord"
 	perPage        = "100"
-	maxPages       = 20 // 2,000 members is plenty for a team tool
+	maxPages       = 20 // 2,000 members or repos is plenty for a team tool
 	maxBodyBytes   = 5 << 20
 	maxErrorMsgLen = 200
 	expiryHeader   = "GitHub-Authentication-Token-Expiration"
@@ -82,6 +83,34 @@ func (c *Client) OrgMembers(ctx context.Context) ([]User, error) {
 	return c.listUsers(ctx, c.endpoint("orgs", c.org, "members"))
 }
 
+// OrgRepos lists the names of the organization's repositories that aren't
+// archived, most recently pushed first. Private repositories are included
+// only when the token has repository access (Metadata: Read-only).
+func (c *Client) OrgRepos(ctx context.Context) ([]string, error) {
+	u := c.endpoint("orgs", c.org, "repos")
+	q := u.Query()
+	q.Set("type", "all")
+	q.Set("sort", "pushed")
+	u.RawQuery = q.Encode()
+
+	repos, err := listPages[repo](ctx, c, u)
+	if err != nil {
+		return nil, err
+	}
+	names := make([]string, 0, len(repos))
+	for _, r := range repos {
+		if !r.Archived {
+			names = append(names, r.Name)
+		}
+	}
+	return names, nil
+}
+
+type repo struct {
+	Name     string `json:"name"`
+	Archived bool   `json:"archived"`
+}
+
 // TeamMembers lists members of team "org/slug".
 func (c *Client) TeamMembers(ctx context.Context, team string) ([]User, error) {
 	org, slug, ok := strings.Cut(team, "/")
@@ -128,16 +157,21 @@ func (c *Client) endpoint(segments ...string) *url.URL {
 }
 
 func (c *Client) listUsers(ctx context.Context, u *url.URL) ([]User, error) {
+	return listPages[User](ctx, c, u)
+}
+
+// listPages GETs u and every following page (per the Link header).
+func listPages[T any](ctx context.Context, c *Client, u *url.URL) ([]T, error) {
 	q := u.Query()
 	q.Set("per_page", perPage)
 	u.RawQuery = q.Encode()
 
-	var all []User
+	var all []T
 	for page := 0; u != nil; page++ {
 		if page >= maxPages {
-			return nil, fmt.Errorf("github: more than %d pages of members", maxPages)
+			return nil, fmt.Errorf("github: more than %d pages from %s", maxPages, u.Path)
 		}
-		var batch []User
+		var batch []T
 		header, err := c.getJSON(ctx, u, &batch)
 		if err != nil {
 			return nil, err

@@ -59,10 +59,11 @@ type Store interface {
 	ListRepos(ctx context.Context) ([]string, error)
 }
 
-// Directory resolves GitHub users.
+// Directory resolves GitHub users and lists the org's repositories.
 type Directory interface {
 	LookupUser(ctx context.Context, login string) (githubapi.User, error)
 	OrgMembers(ctx context.Context) ([]githubapi.User, error)
+	OrgRepos(ctx context.Context) ([]string, error)
 }
 
 // Announcer posts audit messages to the channel.

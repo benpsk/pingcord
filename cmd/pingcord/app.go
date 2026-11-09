@@ -91,7 +91,7 @@ func listen(ctx context.Context, srv *http.Server, log *slog.Logger) error {
 }
 
 // checkGitHubAccess verifies the token at startup, warns before it expires,
-// and warms the org member cache used by /admin autocomplete.
+// and warms the org member and repo caches used by /admin autocomplete.
 func checkGitHubAccess(ctx context.Context, gh *githubapi.Client, dir *githubapi.Directory, log *slog.Logger) {
 	ctx, cancel := context.WithTimeout(ctx, startupCheckTimeout)
 	defer cancel()
@@ -111,6 +111,13 @@ func checkGitHubAccess(ctx context.Context, gh *githubapi.Client, dir *githubapi
 	if err == nil {
 		if _, err := dir.OrgMembers(ctx); err != nil {
 			log.Warn("could not preload org members", "error", err)
+		}
+		// Only public repos are visible without the token's repository
+		// access, so the count shows whether private ones are included.
+		if repos, err := dir.OrgRepos(ctx); err != nil {
+			log.Warn("could not list org repos; /admin watch suggests only repos seen in webhooks", "error", err)
+		} else {
+			log.Info("github repos visible", "count", len(repos))
 		}
 	}
 }

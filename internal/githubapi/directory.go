@@ -40,8 +40,9 @@ type Directory struct {
 	misses map[string]time.Time
 }
 
+// cachedList holds a []User or []string fetched at a given time.
 type cachedList struct {
-	users []User
+	items any
 	at    time.Time
 }
 
@@ -141,7 +142,12 @@ func (d *Directory) store(ctx context.Context, login string, id int64) {
 
 // OrgMembers returns the organization's members.
 func (d *Directory) OrgMembers(ctx context.Context) ([]User, error) {
-	return d.list(ctx, "org", d.api.OrgMembers)
+	return cachedFetch(ctx, d, "org", d.api.OrgMembers)
+}
+
+// OrgRepos returns the organization's unarchived repository names.
+func (d *Directory) OrgRepos(ctx context.Context) ([]string, error) {
+	return cachedFetch(ctx, d, "repos", d.api.OrgRepos)
 }
 
 // TeamMembers returns members of team "org/slug". Teams outside the
@@ -151,32 +157,35 @@ func (d *Directory) TeamMembers(ctx context.Context, team string) ([]User, error
 	if org, _, _ := strings.Cut(team, "/"); !strings.EqualFold(org, d.api.Org()) {
 		return nil, fmt.Errorf("team %s is outside %s: %w", team, d.api.Org(), ErrNotFound)
 	}
-	return d.list(ctx, "team:"+team, func(ctx context.Context) ([]User, error) {
+	return cachedFetch(ctx, d, "team:"+team, func(ctx context.Context) ([]User, error) {
 		return d.api.TeamMembers(ctx, team)
 	})
 }
 
-func (d *Directory) list(ctx context.Context, key string, fetch func(context.Context) ([]User, error)) ([]User, error) {
+// cachedFetch serves the list under key from memory for listTTL, and serves
+// it stale when a refresh fails.
+func cachedFetch[T any](ctx context.Context, d *Directory, key string, fetch func(context.Context) ([]T, error)) ([]T, error) {
 	d.mu.Lock()
 	cached, ok := d.lists[key]
 	d.mu.Unlock()
+	stale, _ := cached.items.([]T)
 	if ok && d.now().Sub(cached.at) < listTTL {
-		return cached.users, nil
+		return stale, nil
 	}
 
-	users, err := fetch(ctx)
+	items, err := fetch(ctx)
 	if err != nil {
 		if ok {
 			d.log.WarnContext(ctx, "github list failed, using stale cache", "list", key, "error", err)
-			return cached.users, nil
+			return stale, nil
 		}
 		return nil, err
 	}
 
 	d.mu.Lock()
-	d.lists[key] = cachedList{users: users, at: d.now()}
+	d.lists[key] = cachedList{items: items, at: d.now()}
 	d.mu.Unlock()
-	return users, nil
+	return items, nil
 }
 
 func (d *Directory) recentlyMissing(login string) bool {

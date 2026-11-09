@@ -132,7 +132,7 @@ Environment only. There's no config file, and data lives in SQLite.
 | Var | Required | Purpose |
 |---|---|---|
 | `GITHUB_WEBHOOK_SECRET` | ✓ | HMAC secret shared with the GitHub webhook (`openssl rand -hex 32`) |
-| `GITHUB_TOKEN` | ✓ | Fine-grained PAT, **Organization → Members: Read-only**. Used for org members, team members and username→ID lookups |
+| `GITHUB_TOKEN` | ✓ | Fine-grained PAT, **Organization → Members: Read-only**, all repositories (*Metadata: Read-only*). Used for org members, team members, username→ID lookups and the repo list in `/admin watch` |
 | `GITHUB_ORG` | ✓ | Org login |
 | `DISCORD_WEBHOOK_URL` | ✓ | Channel webhook that receives the notifications |
 | `DISCORD_APP_ID` | ✓ | Discord application ID |
@@ -259,7 +259,7 @@ LICENSE                        MIT
    Key; Bot tab → token. Invite the app with the `applications.commands` + `bot` scopes. Set
    the Interactions Endpoint URL to `https://<domain>/discord/interactions`.
 3. **GitHub token:** fine-grained PAT → resource owner = your org →
-   Organization permissions → Members: Read-only.
+   Organization permissions → Members: Read-only; Repository access → All repositories.
 4. **GitHub org webhook:** Org → Settings → Webhooks →
    `https://<domain>/github/webhook`, JSON, secret = `GITHUB_WEBHOOK_SECRET`. Events:
    Issues, Issue comments, Pull requests, Pull request reviews, Pull request review
