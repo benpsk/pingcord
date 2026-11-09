@@ -41,6 +41,15 @@ func (s *Store) UpsertLink(ctx context.Context, l Link) ([]Link, error) {
 			`DELETE FROM links WHERE discord_id = ? AND github_id <> ?`, l.DiscordID, l.GitHubID); err != nil {
 			return fmt.Errorf("upsert link: clear previous discord link: %w", err)
 		}
+		// A Discord user whose GitHub account moved to someone else has no
+		// link left; their watches can't ping anyone, so drop them.
+		for _, old := range replaced {
+			if old.DiscordID != l.DiscordID {
+				if err := deleteWatches(ctx, tx, old.DiscordID); err != nil {
+					return err
+				}
+			}
+		}
 		_, err = tx.ExecContext(ctx, `
 			INSERT INTO links (`+linkColumns+`) VALUES (?, ?, ?, ?, ?, ?)
 			ON CONFLICT (github_id) DO UPDATE SET
@@ -71,6 +80,9 @@ func (s *Store) DeleteLinkByDiscordID(ctx context.Context, discordID string) (Li
 		}
 		if _, err := tx.ExecContext(ctx, `DELETE FROM links WHERE discord_id = ?`, discordID); err != nil {
 			return fmt.Errorf("delete link: %w", err)
+		}
+		if err := deleteWatches(ctx, tx, discordID); err != nil {
+			return err
 		}
 		removed = l
 		return nil
