@@ -13,6 +13,18 @@ var ErrInvalidSignature = errors.New("invalid webhook signature")
 
 const signaturePrefix = "sha256="
 
+// WellFormedSignature reports whether header looks like a SHA-256 signature
+// ("sha256=" + 64 hex chars). It lets the server reject junk requests before
+// reading their body.
+func WellFormedSignature(header string) bool {
+	hexSig, ok := strings.CutPrefix(header, signaturePrefix)
+	if !ok || len(hexSig) != sha256.Size*2 {
+		return false
+	}
+	_, err := hex.DecodeString(hexSig)
+	return err == nil
+}
+
 // VerifySignature checks the X-Hub-Signature-256 header against an
 // HMAC-SHA256 of body using secret, in constant time.
 func VerifySignature(secret, body []byte, header string) error {

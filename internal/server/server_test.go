@@ -42,6 +42,7 @@ func (f *fakeEvents) Handle(ctx context.Context, ev githubhook.Event) (notify.Re
 func newTestHandler(events *fakeEvents, interactions http.Handler) http.Handler {
 	return NewHandler(Options{
 		WebhookSecret: secret,
+		Org:           "my-org",
 		Events:        events,
 		Interactions:  interactions,
 		Logger:        slog.New(slog.NewTextHandler(io.Discard, nil)),
@@ -102,6 +103,7 @@ func TestGitHubWebhookRejections(t *testing.T) {
 		{name: "bad signature", mutate: func(r *http.Request) { r.Header.Set("X-Hub-Signature-256", "sha256=00") }, want: http.StatusUnauthorized},
 		{name: "missing signature", mutate: func(r *http.Request) { r.Header.Del("X-Hub-Signature-256") }, want: http.StatusUnauthorized},
 		{name: "missing event header", mutate: func(r *http.Request) { r.Header.Del("X-GitHub-Event") }, want: http.StatusBadRequest},
+		{name: "malformed signature header", mutate: func(r *http.Request) { r.Header.Set("X-Hub-Signature-256", "sha256=nothex") }, want: http.StatusUnauthorized},
 		{name: "form encoded", mutate: func(r *http.Request) { r.Header.Set("Content-Type", "application/x-www-form-urlencoded") }, want: http.StatusUnsupportedMediaType},
 	}
 	for _, tt := range tests {
@@ -207,5 +209,75 @@ func TestNewHTTPServerHasTimeouts(t *testing.T) {
 
 	if srv.ReadHeaderTimeout == 0 || srv.ReadTimeout == 0 || srv.WriteTimeout == 0 || srv.IdleTimeout == 0 {
 		t.Fatalf("server missing timeouts: %+v", srv)
+	}
+}
+
+func TestGitHubWebhookIgnoresOtherOrgs(t *testing.T) {
+	events := &fakeEvents{}
+	body := strings.Replace(commentBody, `"sender"`, `"organization":{"login":"Other-Org"},"sender"`, 1)
+
+	rec := serve(newTestHandler(events, nil), signedRequest("issue_comment", []byte(body)))
+
+	if rec.Code != http.StatusOK || len(events.got) != 0 {
+		t.Fatalf("status=%d events=%d", rec.Code, len(events.got))
+	}
+
+	body = strings.Replace(commentBody, `"sender"`, `"organization":{"login":"MY-ORG"},"sender"`, 1)
+	serve(newTestHandler(events, nil), signedRequest("issue_comment", []byte(body)))
+	if len(events.got) != 1 {
+		t.Fatal("org match should be case-insensitive")
+	}
+}
+
+func TestGitHubWebhookLimitsConcurrentBodies(t *testing.T) {
+	h := NewHandler(Options{
+		WebhookSecret: secret, Events: &fakeEvents{}, MaxConcurrentWebhooks: 1,
+		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+	})
+	pr, pw := io.Pipe()
+	slow := signedRequest("issue_comment", []byte(commentBody))
+	slow.Body = pr
+	done := make(chan struct{})
+	go func() {
+		serve(h, slow)
+		close(done)
+	}()
+	time.Sleep(50 * time.Millisecond) // let the slow request take the slot
+
+	rec := serve(h, signedRequest("issue_comment", []byte(commentBody)))
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503 while the slot is taken", rec.Code)
+	}
+	_ = pw.Close()
+	<-done
+	if rec := serve(h, signedRequest("issue_comment", []byte(commentBody))); rec.Code != http.StatusOK {
+		t.Fatalf("slot not released: %d", rec.Code)
+	}
+}
+
+func TestInvalidSignatureWarningsAreSampledAndTruncated(t *testing.T) {
+	var logs bytes.Buffer
+	h := NewHandler(Options{
+		WebhookSecret: secret, Events: &fakeEvents{},
+		Logger: slog.New(slog.NewJSONHandler(&logs, nil)),
+	})
+	for range 5 {
+		req := signedRequest("issue_comment", []byte(commentBody))
+		req.Header.Set("X-Hub-Signature-256", "sha256="+strings.Repeat("0", 64))
+		req.Header.Set("X-GitHub-Delivery", strings.Repeat("x", 5000))
+		req.Header.Set("X-Forwarded-For", "203.0.113.7")
+		serve(h, req)
+	}
+
+	out := logs.String()
+	if n := strings.Count(out, "invalid signature"); n != 1 {
+		t.Fatalf("warnings logged = %d, want 1 (sampled)\n%s", n, out)
+	}
+	if strings.Contains(out, strings.Repeat("x", 100)) {
+		t.Fatal("attacker-controlled header not truncated in logs")
+	}
+	if !strings.Contains(out, "203.0.113.7") {
+		t.Fatal("client IP from the proxy not logged")
 	}
 }

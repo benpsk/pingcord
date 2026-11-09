@@ -7,6 +7,12 @@
 # service, uncomment `ports` under `pingcord`, and proxy
 # /github/webhook and /discord/interactions to 127.0.0.1:8080.
 
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
 services:
   pingcord:
     build: .
@@ -18,6 +24,9 @@ services:
     read_only: true
     cap_drop: [ALL]
     security_opt: ["no-new-privileges:true"]
+    mem_limit: 256m
+    pids_limit: 100
+    logging: *logging
     expose: ["8080"]
     # ports: ["127.0.0.1:8080:8080"]
 
@@ -34,6 +43,7 @@ services:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy-data:/data
       - caddy-config:/config
+    logging: *logging
     depends_on:
       - pingcord
 

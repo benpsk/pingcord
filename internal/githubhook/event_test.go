@@ -172,8 +172,8 @@ func TestParseContext(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Parse: %v", err)
 			}
-			if ev.Repo != "my-org/api" {
-				t.Errorf("Repo = %q", ev.Repo)
+			if ev.Repo != "my-org/api" || ev.Org != "my-org" {
+				t.Errorf("Repo/Org = %q / %q", ev.Repo, ev.Org)
 			}
 			if ev.Actor != tt.wantActor {
 				t.Errorf("Actor = %+v, want %+v", ev.Actor, tt.wantActor)

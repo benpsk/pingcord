@@ -79,6 +79,7 @@ func TestCleanExcerpt(t *testing.T) {
 		{"defangs at-signs", "@everyone and @alice", "@\u200beveryone and @\u200balice"},
 		{"defangs discord mention syntax", "<@123> <@&456>", "<@\u200b123> <@\u200b&456>"},
 		{"normalizes CRLF", "a\r\nb", "a\nb"},
+		{"neutralizes masked links", "[re-auth here](https://evil.example)", "[re-auth here]\\(https://evil.example)"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

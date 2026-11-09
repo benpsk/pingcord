@@ -2,6 +2,8 @@ module github.com/benpsk/pingcord
 
 go 1.26.0
 
+toolchain go1.26.10
+
 require modernc.org/sqlite v1.62.0
 
 require (

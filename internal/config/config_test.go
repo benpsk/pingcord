@@ -106,6 +106,7 @@ func TestLoadErrors(t *testing.T) {
 		{name: "non-numeric port", mutate: func(e map[string]string) { e["PORT"] = "http" }, wantErr: []string{"PORT"}},
 		{name: "bad bool", mutate: func(e map[string]string) { e["IGNORE_BOTS"] = "maybe" }, wantErr: []string{"IGNORE_BOTS"}},
 		{name: "bad github api url", mutate: func(e map[string]string) { e["GITHUB_API_URL"] = "ftp://x" }, wantErr: []string{"GITHUB_API_URL"}},
+		{name: "plain http to a remote host", mutate: func(e map[string]string) { e["GITHUB_API_URL"] = "http://ghe.example.com/api/v3" }, wantErr: []string{"GITHUB_API_URL", "https"}},
 		{name: "relative discord api url", mutate: func(e map[string]string) { e["DISCORD_API_URL"] = "/api" }, wantErr: []string{"DISCORD_API_URL"}},
 		{name: "bad log level", mutate: func(e map[string]string) { e["LOG_LEVEL"] = "loud" }, wantErr: []string{"LOG_LEVEL"}},
 	}

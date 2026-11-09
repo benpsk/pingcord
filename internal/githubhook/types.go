@@ -64,6 +64,7 @@ type Event struct {
 	Name     string // X-GitHub-Event, e.g. "pull_request"
 	Action   string // payload "action", e.g. "opened"
 	Repo     string // "owner/name"
+	Org      string // organization login (or repository owner)
 	Actor    User   // who triggered the event
 	Subject  Subject
 	URL      string // most specific link (comment/review), else the subject

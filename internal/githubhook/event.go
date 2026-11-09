@@ -53,6 +53,7 @@ func Parse(name string, body []byte) (Event, error) {
 	if p.Repository != nil {
 		ev.Repo = p.Repository.FullName
 	}
+	ev.Org = p.org()
 	ev.URL = ev.Subject.URL
 	if primary != nil && primary.HTMLURL != "" {
 		ev.URL = primary.HTMLURL

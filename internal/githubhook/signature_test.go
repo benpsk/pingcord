@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"strings"
 	"testing"
 )
 
@@ -54,5 +55,21 @@ func TestVerifySignatureGitHubDocsVector(t *testing.T) {
 	)
 	if err != nil {
 		t.Fatalf("GitHub docs test vector failed: %v", err)
+	}
+}
+
+func TestWellFormedSignature(t *testing.T) {
+	valid := sign([]byte("k"), []byte("b"))
+	for header, want := range map[string]bool{
+		valid:                               true,
+		"":                                  false,
+		"sha1=" + valid[7:]:                 false,
+		"sha256=" + valid[8:]:               false, // too short
+		"sha256=" + valid[7:] + "00":        false, // too long
+		"sha256=" + strings.Repeat("z", 64): false,
+	} {
+		if got := WellFormedSignature(header); got != want {
+			t.Errorf("WellFormedSignature(%q) = %v, want %v", header, got, want)
+		}
 	}
 }

@@ -118,14 +118,18 @@ func footerText(ev githubhook.Event) string {
 }
 
 // cleanExcerpt prepares user-written GitHub text for an embed: drops HTML
-// comments (PR templates), collapses blank lines, truncates, and inserts a
-// zero-width space after every "@" so nothing in it can render as a ping.
+// comments (PR templates), collapses blank lines, truncates, neutralizes
+// masked links, and inserts a zero-width space after every "@" so nothing in
+// it can render as a ping.
 func cleanExcerpt(s string) string {
 	s = strings.ReplaceAll(s, "\r\n", "\n")
 	s = htmlCommentRe.ReplaceAllString(s, "")
 	s = blankLinesRe.ReplaceAllString(s, "\n\n")
 	s = strings.TrimSpace(s)
 	s = truncateRunes(s, maxExcerptRunes)
+	// Escape "](" so masked links ("[re-auth](https://evil)") from untrusted
+	// GitHub text show as plain text instead of disguised links.
+	s = strings.ReplaceAll(s, "](", "]\\(")
 	return strings.ReplaceAll(s, "@", "@\u200b")
 }
 

@@ -141,13 +141,24 @@ func (l *loader) matching(key string, re *regexp.Regexp, msg string) string {
 }
 
 // apiURL reads an optional API base URL override (e.g. GitHub Enterprise).
+// Tokens are sent to it, so it must be https; plain http is only allowed for
+// localhost (tests, local proxies).
 func (l *loader) apiURL(key, def string) string {
 	v := strings.TrimRight(l.optional(key, def), "/")
 	u, err := url.Parse(v)
-	if err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" {
-		l.fail(key, "must be an absolute http(s) URL")
+	switch {
+	case err != nil || u.Host == "":
+		l.fail(key, "must be an absolute https URL")
+	case u.Scheme == "https":
+	case u.Scheme == "http" && isLoopback(u.Hostname()):
+	default:
+		l.fail(key, "must use https (plain http is only allowed for localhost)")
 	}
 	return v
+}
+
+func isLoopback(host string) bool {
+	return host == "localhost" || host == "127.0.0.1" || host == "::1"
 }
 
 func (l *loader) port(key string) string {

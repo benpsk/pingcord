@@ -9,6 +9,8 @@ import (
 	"log/slog"
 	"mime"
 	"net/http"
+	"strings"
+	"sync"
 	"time"
 
 	"github.com/benpsk/pingcord/internal/githubhook"
@@ -20,6 +22,12 @@ const (
 	maxGitHubBody = 25 << 20
 	// handleTimeout keeps us under GitHub's 10s delivery timeout.
 	handleTimeout = 9 * time.Second
+	// defaultMaxConcurrentWebhooks bounds memory used by unauthenticated
+	// bodies being read before their signature can be checked.
+	defaultMaxConcurrentWebhooks = 8
+	// invalidSigLogEvery rate-limits warnings about bad signatures.
+	invalidSigLogEvery = time.Minute
+	maxLoggedHeaderLen = 64
 )
 
 // EventHandler processes a parsed GitHub event.
@@ -29,10 +37,12 @@ type EventHandler interface {
 
 // Options configures the HTTP handler.
 type Options struct {
-	WebhookSecret []byte
-	Events        EventHandler
-	Interactions  http.Handler // optional; /discord/interactions is 404 without it
-	Logger        *slog.Logger
+	WebhookSecret         []byte
+	Org                   string // events from other orgs are ignored; empty accepts all
+	Events                EventHandler
+	Interactions          http.Handler // optional; /discord/interactions is 404 without it
+	Logger                *slog.Logger
+	MaxConcurrentWebhooks int // default 8
 }
 
 // NewHandler returns the root HTTP handler.
@@ -41,7 +51,17 @@ func NewHandler(opts Options) http.Handler {
 	if log == nil {
 		log = slog.Default()
 	}
-	gh := &githubWebhook{secret: opts.WebhookSecret, events: opts.Events, log: log}
+	slots := opts.MaxConcurrentWebhooks
+	if slots <= 0 {
+		slots = defaultMaxConcurrentWebhooks
+	}
+	gh := &githubWebhook{
+		secret: opts.WebhookSecret,
+		org:    opts.Org,
+		events: opts.Events,
+		log:    log,
+		slots:  make(chan struct{}, slots),
+	}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
@@ -69,35 +89,65 @@ func NewHTTPServer(addr string, h http.Handler) *http.Server {
 
 type githubWebhook struct {
 	secret []byte
+	org    string
 	events EventHandler
 	log    *slog.Logger
+	slots  chan struct{}
+
+	mu             sync.Mutex
+	lastInvalidLog time.Time
+	suppressed     int
 }
 
 func (g *githubWebhook) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	log := g.log.With("delivery", r.Header.Get("X-GitHub-Delivery"), "event", r.Header.Get("X-GitHub-Event"))
-
 	if mt, _, _ := mime.ParseMediaType(r.Header.Get("Content-Type")); mt != "application/json" {
 		http.Error(w, "content type must be application/json (set it in the GitHub webhook settings)", http.StatusUnsupportedMediaType)
 		return
 	}
-
-	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxGitHubBody))
-	if err != nil {
-		var tooLarge *http.MaxBytesError
-		if errors.As(err, &tooLarge) {
-			http.Error(w, "payload too large", http.StatusRequestEntityTooLarge)
-			return
-		}
-		http.Error(w, "could not read body", http.StatusBadRequest)
-		return
-	}
-
-	if err := githubhook.VerifySignature(g.secret, body, r.Header.Get("X-Hub-Signature-256")); err != nil {
-		log.WarnContext(r.Context(), "rejected webhook with invalid signature", "remote", r.RemoteAddr)
+	sigHeader := r.Header.Get("X-Hub-Signature-256")
+	if !githubhook.WellFormedSignature(sigHeader) {
+		g.warnInvalidSignature(r)
 		http.Error(w, "invalid signature", http.StatusUnauthorized)
 		return
 	}
 
+	select {
+	case g.slots <- struct{}{}:
+		defer func() { <-g.slots }()
+	default:
+		http.Error(w, "busy, retry later", http.StatusServiceUnavailable)
+		return
+	}
+
+	body, ok := readBody(w, r)
+	if !ok {
+		return
+	}
+	if err := githubhook.VerifySignature(g.secret, body, sigHeader); err != nil {
+		g.warnInvalidSignature(r)
+		http.Error(w, "invalid signature", http.StatusUnauthorized)
+		return
+	}
+	g.handle(w, r, body)
+}
+
+func readBody(w http.ResponseWriter, r *http.Request) ([]byte, bool) {
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxGitHubBody))
+	if err == nil {
+		return body, true
+	}
+	var tooLarge *http.MaxBytesError
+	if errors.As(err, &tooLarge) {
+		http.Error(w, "payload too large", http.StatusRequestEntityTooLarge)
+	} else {
+		http.Error(w, "could not read body", http.StatusBadRequest)
+	}
+	return nil, false
+}
+
+// handle processes a delivery whose signature has been verified.
+func (g *githubWebhook) handle(w http.ResponseWriter, r *http.Request, body []byte) {
+	log := g.log.With("delivery", r.Header.Get("X-GitHub-Delivery"), "event", r.Header.Get("X-GitHub-Event"))
 	name := r.Header.Get("X-GitHub-Event")
 	switch name {
 	case "":
@@ -115,6 +165,11 @@ func (g *githubWebhook) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "malformed payload", http.StatusBadRequest)
 		return
 	}
+	if g.org != "" && ev.Org != "" && !strings.EqualFold(ev.Org, g.org) {
+		log.WarnContext(r.Context(), "ignoring event from another organization", "org", ev.Org)
+		_, _ = io.WriteString(w, "ignored: other organization\n")
+		return
+	}
 
 	ctx, cancel := context.WithTimeout(r.Context(), handleTimeout)
 	defer cancel()
@@ -128,6 +183,44 @@ func (g *githubWebhook) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	log.InfoContext(r.Context(), "github event handled",
 		"action", ev.Action, "repo", ev.Repo, "pinged", len(res.Pinged), "unlinked", res.Unlinked)
 	_, _ = io.WriteString(w, "ok\n")
+}
+
+// warnInvalidSignature logs bad-signature requests at most once per
+// invalidSigLogEvery, with attacker-controlled values truncated, so an
+// unauthenticated client can't flood the logs.
+func (g *githubWebhook) warnInvalidSignature(r *http.Request) {
+	g.mu.Lock()
+	now := time.Now()
+	if now.Sub(g.lastInvalidLog) < invalidSigLogEvery {
+		g.suppressed++
+		g.mu.Unlock()
+		return
+	}
+	suppressed := g.suppressed
+	g.lastInvalidLog, g.suppressed = now, 0
+	g.mu.Unlock()
+
+	g.log.WarnContext(r.Context(), "rejected webhook with invalid signature",
+		"client", clientIP(r),
+		"delivery", truncate(r.Header.Get("X-GitHub-Delivery")),
+		"event", truncate(r.Header.Get("X-GitHub-Event")),
+		"suppressed_since_last", suppressed)
+}
+
+// clientIP prefers the address added by the reverse proxy (Caddy).
+func clientIP(r *http.Request) string {
+	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+		parts := strings.Split(xff, ",")
+		return truncate(strings.TrimSpace(parts[len(parts)-1]))
+	}
+	return r.RemoteAddr
+}
+
+func truncate(s string) string {
+	if len(s) > maxLoggedHeaderLen {
+		return s[:maxLoggedHeaderLen] + "…"
+	}
+	return s
 }
 
 // recoverer turns panics into 500s without leaking details.

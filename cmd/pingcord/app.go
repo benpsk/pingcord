@@ -55,6 +55,7 @@ func serve(ctx context.Context, getenv func(string) string, logOut io.Writer) er
 
 	handler := server.NewHandler(server.Options{
 		WebhookSecret: cfg.GitHub.WebhookSecret,
+		Org:           cfg.GitHub.Org,
 		Events:        notifier,
 		Interactions:  interactions,
 		Logger:        log,
