@@ -3,6 +3,7 @@ package githubapi
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -173,5 +174,44 @@ func TestListErrorWithoutCacheIsReturned(t *testing.T) {
 
 	if _, err := d.TeamMembers(context.Background(), "my-org/backend"); err == nil {
 		t.Fatal("expected error")
+	}
+}
+
+func TestTeamMembersRejectsOtherOrgsWithoutCallingAPI(t *testing.T) {
+	d, f, _, _ := newTestDirectory(t)
+
+	_, err := d.TeamMembers(context.Background(), "other-org/backend")
+
+	if !errors.Is(err, ErrNotFound) || f.calls.Load() != 0 {
+		t.Fatalf("err = %v, calls = %d", err, f.calls.Load())
+	}
+}
+
+func TestNegativeCacheIsPruned(t *testing.T) {
+	d, _, _, now := newTestDirectory(t)
+	for i := range maxMisses {
+		d.markMissing(fmt.Sprintf("ghost%d", i))
+	}
+	*now = now.Add(2 * negativeTTL)
+
+	d.markMissing("one-more")
+
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if len(d.misses) != 1 {
+		t.Fatalf("expired misses not pruned: %d entries", len(d.misses))
+	}
+}
+
+func TestNegativeCacheIsBoundedEvenWhenFresh(t *testing.T) {
+	d, _, _, _ := newTestDirectory(t)
+	for i := range maxMisses + 10 {
+		d.markMissing(fmt.Sprintf("ghost%d", i))
+	}
+
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if len(d.misses) > maxMisses {
+		t.Fatalf("misses = %d, want <= %d", len(d.misses), maxMisses)
 	}
 }

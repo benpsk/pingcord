@@ -99,7 +99,11 @@ func (n *Notifier) Handle(ctx context.Context, ev githubhook.Event) (Result, err
 		return Result{}, nil
 	}
 
-	cands, err := n.filter(ctx, ev.Actor, n.candidates(ctx, ev))
+	all, err := n.candidates(ctx, ev)
+	if err != nil {
+		return Result{}, err
+	}
+	cands, err := n.filter(ctx, ev.Actor, all)
 	if err != nil {
 		return Result{}, err
 	}
@@ -121,47 +125,73 @@ func (n *Notifier) Handle(ctx context.Context, ev githubhook.Event) (Result, err
 	return res, nil
 }
 
+// Per-event caps on GitHub lookups, so one comment full of @mentions can't
+// exhaust the token's rate limit or the delivery deadline.
+const (
+	maxMentionLookups = 25
+	maxTeamMentions   = 5
+)
+
 // candidates lists everyone the event concerns, in display order: role
-// targets, then @user mentions, then @team mentions.
-func (n *Notifier) candidates(ctx context.Context, ev githubhook.Event) []candidate {
+// targets, then @user mentions, then @team mentions. A requested team that
+// can't be resolved is an error (the delivery fails and can be redelivered);
+// unresolvable mentions are logged and skipped.
+func (n *Notifier) candidates(ctx context.Context, ev githubhook.Event) ([]candidate, error) {
 	var out []candidate
 	for _, t := range ev.Targets {
-		if t.Team != "" {
-			out = append(out, n.teamCandidates(ctx, t.Team, string(t.Reason)+" via @"+t.Team)...)
+		if t.Team == "" {
+			out = append(out, candidate{id: t.User.ID, login: t.User.Login, isBot: t.User.IsBot, reason: string(t.Reason)})
 			continue
 		}
-		out = append(out, candidate{id: t.User.ID, login: t.User.Login, isBot: t.User.IsBot, reason: string(t.Reason)})
+		members, err := n.teamCandidates(ctx, t.Team, string(t.Reason)+" via @\u200b"+t.Team)
+		if err != nil {
+			return nil, fmt.Errorf("resolve requested team %s: %w", t.Team, err)
+		}
+		out = append(out, members...)
 	}
 
-	if len(ev.Mentions.Users) > 0 {
-		ids, err := n.dir.ResolveLogins(ctx, ev.Mentions.Users)
+	users := capList(ctx, n.log, "user mentions", ev.Mentions.Users, maxMentionLookups)
+	if len(users) > 0 {
+		ids, err := n.dir.ResolveLogins(ctx, users)
 		if err != nil {
 			n.log.WarnContext(ctx, "some mentions could not be resolved", "error", err)
 		}
-		for _, login := range ev.Mentions.Users {
+		for _, login := range users {
 			if id, ok := ids[login]; ok {
 				out = append(out, candidate{id: id, login: login, reason: string(githubhook.ReasonMentioned)})
 			}
 		}
 	}
 
-	for _, team := range ev.Mentions.Teams {
-		out = append(out, n.teamCandidates(ctx, team, string(githubhook.ReasonMentioned)+" via @"+team)...)
+	for _, team := range capList(ctx, n.log, "team mentions", ev.Mentions.Teams, maxTeamMentions) {
+		members, err := n.teamCandidates(ctx, team, string(githubhook.ReasonMentioned)+" via @\u200b"+team)
+		if err != nil {
+			n.log.WarnContext(ctx, "team members unavailable", "team", team, "error", err)
+			continue
+		}
+		out = append(out, members...)
 	}
-	return out
+	return out, nil
 }
 
-func (n *Notifier) teamCandidates(ctx context.Context, team, reason string) []candidate {
+func capList(ctx context.Context, log *slog.Logger, what string, list []string, limit int) []string {
+	if len(list) <= limit {
+		return list
+	}
+	log.WarnContext(ctx, "too many "+what+" in one event; ignoring the rest", "count", len(list), "limit", limit)
+	return list[:limit]
+}
+
+func (n *Notifier) teamCandidates(ctx context.Context, team, reason string) ([]candidate, error) {
 	members, err := n.dir.TeamMembers(ctx, team)
 	if err != nil {
-		n.log.WarnContext(ctx, "team members unavailable", "team", team, "error", err)
-		return nil
+		return nil, err
 	}
 	out := make([]candidate, 0, len(members))
 	for _, m := range members {
 		out = append(out, candidate{id: m.ID, login: m.Login, reason: reason})
 	}
-	return out
+	return out, nil
 }
 
 // filter drops the actor, bots (when configured) and ignored users.

@@ -3,6 +3,7 @@ package notify
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"reflect"
@@ -146,7 +147,7 @@ func TestHandlePingsEveryoneConcernedExceptActor(t *testing.T) {
 		t.Fatalf("sent %d messages, want 1", len(snd.sent))
 	}
 	msg := snd.sent[0]
-	wantContent := "<@100> commented on your PR\n<@300> mentioned\n<@400> mentioned via @my-org/qa"
+	wantContent := "<@100> commented on your PR\n<@300> mentioned\n<@400> mentioned via @\u200bmy-org/qa"
 	if msg.Content != wantContent {
 		t.Errorf("Content =\n%s\nwant\n%s", msg.Content, wantContent)
 	}
@@ -188,7 +189,7 @@ func TestHandleTeamReviewRequest(t *testing.T) {
 	if _, err := n.Handle(context.Background(), ev); err != nil {
 		t.Fatal(err)
 	}
-	want := "<@200> review requested via @my-org/qa\n<@400> review requested via @my-org/qa"
+	want := "<@200> review requested via @\u200bmy-org/qa\n<@400> review requested via @\u200bmy-org/qa"
 	if got := snd.sent[0].Content; got != want {
 		t.Errorf("Content = %q, want %q", got, want)
 	}
@@ -291,4 +292,60 @@ func TestHandleNoRecipientsSendsNothing(t *testing.T) {
 	if err != nil || len(snd.sent) != 0 || len(res.Pinged) != 0 {
 		t.Fatalf("res=%+v err=%v sent=%d", res, err, len(snd.sent))
 	}
+}
+
+func TestHandleFailsWhenRequestedTeamCannotBeResolved(t *testing.T) {
+	n, _, _, snd := setup()
+	ev := prComment()
+	ev.Targets = []githubhook.Target{{Team: "my-org/unknown", Reason: githubhook.ReasonReviewRequested}}
+
+	_, err := n.Handle(context.Background(), ev)
+
+	if err == nil {
+		t.Fatal("a review request whose team can't be resolved must fail the delivery so it can be redelivered")
+	}
+	if len(snd.sent) != 0 {
+		t.Fatal("nothing should be sent on failure")
+	}
+}
+
+func TestHandleCapsMentionLookups(t *testing.T) {
+	n, _, dir, _ := setup()
+	var asked []string
+	counting := &countingDir{fakeDir: dir, asked: &asked}
+	n.dir = counting
+	ev := prComment()
+	ev.Mentions.Users = nil
+	for i := range maxMentionLookups + 50 {
+		ev.Mentions.Users = append(ev.Mentions.Users, fmt.Sprintf("user%d", i))
+	}
+	for i := range maxTeamMentions + 3 {
+		ev.Mentions.Teams = append(ev.Mentions.Teams, fmt.Sprintf("my-org/t%d", i))
+	}
+
+	if _, err := n.Handle(context.Background(), ev); err != nil {
+		t.Fatal(err)
+	}
+	if len(asked) != maxMentionLookups {
+		t.Fatalf("resolved %d logins, want cap %d", len(asked), maxMentionLookups)
+	}
+	if counting.teamCalls != maxTeamMentions {
+		t.Fatalf("team lookups = %d, want cap %d", counting.teamCalls, maxTeamMentions)
+	}
+}
+
+type countingDir struct {
+	*fakeDir
+	asked     *[]string
+	teamCalls int
+}
+
+func (c *countingDir) ResolveLogins(ctx context.Context, logins []string) (map[string]int64, error) {
+	*c.asked = append(*c.asked, logins...)
+	return c.fakeDir.ResolveLogins(ctx, logins)
+}
+
+func (c *countingDir) TeamMembers(ctx context.Context, team string) ([]githubapi.User, error) {
+	c.teamCalls++
+	return c.fakeDir.TeamMembers(ctx, team)
 }

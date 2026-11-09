@@ -14,6 +14,9 @@ const (
 	loginTTL    = 7 * 24 * time.Hour
 	listTTL     = 10 * time.Minute
 	negativeTTL = time.Hour
+	// maxMisses bounds the negative cache; a signed payload full of unique
+	// bogus @mentions must not grow memory without limit.
+	maxMisses = 10000
 )
 
 // LoginCache persists login → ID lookups (implemented by store.Store).
@@ -141,9 +144,13 @@ func (d *Directory) OrgMembers(ctx context.Context) ([]User, error) {
 	return d.list(ctx, "org", d.api.OrgMembers)
 }
 
-// TeamMembers returns members of team "org/slug".
+// TeamMembers returns members of team "org/slug". Teams outside the
+// configured organization are reported as not found without an API call.
 func (d *Directory) TeamMembers(ctx context.Context, team string) ([]User, error) {
 	team = strings.ToLower(team)
+	if org, _, _ := strings.Cut(team, "/"); !strings.EqualFold(org, d.api.Org()) {
+		return nil, fmt.Errorf("team %s is outside %s: %w", team, d.api.Org(), ErrNotFound)
+	}
 	return d.list(ctx, "team:"+team, func(ctx context.Context) ([]User, error) {
 		return d.api.TeamMembers(ctx, team)
 	})
@@ -182,5 +189,16 @@ func (d *Directory) recentlyMissing(login string) bool {
 func (d *Directory) markMissing(login string) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
+	if len(d.misses) >= maxMisses {
+		now := d.now()
+		for k, at := range d.misses {
+			if now.Sub(at) >= negativeTTL {
+				delete(d.misses, k)
+			}
+		}
+		if len(d.misses) >= maxMisses {
+			clear(d.misses)
+		}
+	}
 	d.misses[login] = d.now()
 }
