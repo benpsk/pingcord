@@ -1,0 +1,43 @@
+# pingcord + Caddy (automatic HTTPS).
+#
+#   cp .env.example .env   # fill it in
+#   docker compose up -d
+#
+# Already running Caddy or another proxy on the host? Delete the `caddy`
+# service, uncomment `ports` under `pingcord`, and proxy
+# /github/webhook and /discord/interactions to 127.0.0.1:8080.
+
+services:
+  pingcord:
+    build: .
+    image: pingcord:latest
+    restart: unless-stopped
+    env_file: .env
+    volumes:
+      - pingcord-data:/data
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    expose: ["8080"]
+    # ports: ["127.0.0.1:8080:8080"]
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    environment:
+      PINGCORD_DOMAIN: ${PINGCORD_DOMAIN:?set PINGCORD_DOMAIN in .env}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      - pingcord
+
+volumes:
+  pingcord-data:
+  caddy-data:
+  caddy-config:

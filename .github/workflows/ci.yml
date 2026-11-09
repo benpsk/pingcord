@@ -36,6 +36,15 @@ jobs:
         with:
           version: v2.14.0
 
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Build image
+        run: docker build --build-arg VERSION=${{ github.sha }} -t pingcord:ci .
+      - name: Smoke test
+        run: docker run --rm pingcord:ci -version
+
   vulncheck:
     runs-on: ubuntu-latest
     steps:

@@ -1,0 +1,16 @@
+# Caddy obtains and renews the HTTPS certificate for this domain automatically.
+# Point the domain's DNS A/AAAA record at this server first.
+{$PINGCORD_DOMAIN} {
+	request_body {
+		max_size 26MB
+	}
+
+	# Only expose pingcord's endpoints; everything else is 404.
+	@pingcord path /github/webhook /discord/interactions /healthz
+	handle @pingcord {
+		reverse_proxy pingcord:8080
+	}
+	handle {
+		respond 404
+	}
+}
