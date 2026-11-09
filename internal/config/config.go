@@ -77,7 +77,7 @@ func Load(getenv func(string) string) (Config, error) {
 			WebhookSecret: []byte(l.secret("GITHUB_WEBHOOK_SECRET", minWebhookSecretLen)),
 			Token:         l.required("GITHUB_TOKEN"),
 			Org:           l.matching("GITHUB_ORG", orgRe, "must be a valid GitHub organization login"),
-			APIBaseURL:    defaultGitHubAPIURL,
+			APIBaseURL:    l.apiURL("GITHUB_API_URL", defaultGitHubAPIURL),
 		},
 		Discord: Discord{
 			WebhookURL: l.discordWebhookURL("DISCORD_WEBHOOK_URL"),
@@ -85,7 +85,7 @@ func Load(getenv func(string) string) (Config, error) {
 			PublicKey:  l.publicKey("DISCORD_PUBLIC_KEY"),
 			BotToken:   l.required("DISCORD_BOT_TOKEN"),
 			GuildID:    l.matching("DISCORD_GUILD_ID", snowflakeRe, "must be a Discord ID (17-20 digits)"),
-			APIBaseURL: defaultDiscordAPIURL,
+			APIBaseURL: l.apiURL("DISCORD_API_URL", defaultDiscordAPIURL),
 		},
 	}
 
@@ -136,6 +136,16 @@ func (l *loader) matching(key string, re *regexp.Regexp, msg string) string {
 	v := l.required(key)
 	if v != "" && !re.MatchString(v) {
 		l.fail(key, msg)
+	}
+	return v
+}
+
+// apiURL reads an optional API base URL override (e.g. GitHub Enterprise).
+func (l *loader) apiURL(key, def string) string {
+	v := strings.TrimRight(l.optional(key, def), "/")
+	u, err := url.Parse(v)
+	if err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" {
+		l.fail(key, "must be an absolute http(s) URL")
 	}
 	return v
 }

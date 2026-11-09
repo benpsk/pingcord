@@ -66,6 +66,8 @@ func TestLoadOptionalOverrides(t *testing.T) {
 	env["DB_PATH"] = "/tmp/x.db"
 	env["IGNORE_BOTS"] = "false"
 	env["LOG_LEVEL"] = "debug"
+	env["GITHUB_API_URL"] = "https://ghe.example.com/api/v3/"
+	env["DISCORD_API_URL"] = "http://127.0.0.1:9999/api"
 
 	cfg, err := Load(getenvFrom(env))
 	if err != nil {
@@ -73,6 +75,9 @@ func TestLoadOptionalOverrides(t *testing.T) {
 	}
 	if cfg.Addr != ":9000" || cfg.DBPath != "/tmp/x.db" || cfg.IgnoreBots || cfg.LogLevel != slog.LevelDebug {
 		t.Errorf("overrides not applied: %+v", cfg)
+	}
+	if cfg.GitHub.APIBaseURL != "https://ghe.example.com/api/v3" || cfg.Discord.APIBaseURL != "http://127.0.0.1:9999/api" {
+		t.Errorf("API URL overrides = %q / %q", cfg.GitHub.APIBaseURL, cfg.Discord.APIBaseURL)
 	}
 }
 
@@ -100,6 +105,8 @@ func TestLoadErrors(t *testing.T) {
 		{name: "bad port", mutate: func(e map[string]string) { e["PORT"] = "70000" }, wantErr: []string{"PORT"}},
 		{name: "non-numeric port", mutate: func(e map[string]string) { e["PORT"] = "http" }, wantErr: []string{"PORT"}},
 		{name: "bad bool", mutate: func(e map[string]string) { e["IGNORE_BOTS"] = "maybe" }, wantErr: []string{"IGNORE_BOTS"}},
+		{name: "bad github api url", mutate: func(e map[string]string) { e["GITHUB_API_URL"] = "ftp://x" }, wantErr: []string{"GITHUB_API_URL"}},
+		{name: "relative discord api url", mutate: func(e map[string]string) { e["DISCORD_API_URL"] = "/api" }, wantErr: []string{"DISCORD_API_URL"}},
 		{name: "bad log level", mutate: func(e map[string]string) { e["LOG_LEVEL"] = "loud" }, wantErr: []string{"LOG_LEVEL"}},
 	}
 
