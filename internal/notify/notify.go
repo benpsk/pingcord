@@ -21,6 +21,8 @@ type Store interface {
 	RefreshLogins(ctx context.Context, logins map[int64]string) error
 	LinksByGitHubIDs(ctx context.Context, ids []int64) (map[int64]store.Link, error)
 	IgnoredIDs(ctx context.Context, ids []int64) (map[int64]bool, error)
+	WatchersFor(ctx context.Context, repo string) ([]store.Watcher, error)
+	RecordRepo(ctx context.Context, name string) error
 }
 
 // Directory resolves GitHub identities.
@@ -93,6 +95,11 @@ func (n *Notifier) Handle(ctx context.Context, ev githubhook.Event) (Result, err
 	if len(ev.Users) > 0 {
 		if err := n.store.RefreshLogins(ctx, ev.Users); err != nil {
 			n.log.WarnContext(ctx, "refresh logins failed", "error", err)
+		}
+	}
+	if name := repoName(ev.Repo); name != "" {
+		if err := n.store.RecordRepo(ctx, name); err != nil {
+			n.log.WarnContext(ctx, "record repo failed", "repo", name, "error", err)
 		}
 	}
 	if n.ignoreBots && ev.Actor.IsBot {
@@ -171,7 +178,58 @@ func (n *Notifier) candidates(ctx context.Context, ev githubhook.Event) ([]candi
 		}
 		out = append(out, members...)
 	}
+
+	watchers, err := n.watcherCandidates(ctx, ev)
+	if err != nil {
+		return nil, err
+	}
+	return append(out, watchers...), nil
+}
+
+// watcherCandidates returns the watchers whose level (their highest across
+// the org-wide watch and the watch for this repo) covers the event.
+func (n *Notifier) watcherCandidates(ctx context.Context, ev githubhook.Event) ([]candidate, error) {
+	if ev.Watch.Level == githubhook.WatchNone {
+		return nil, nil
+	}
+	rows, err := n.store.WatchersFor(ctx, repoName(ev.Repo))
+	if err != nil {
+		return nil, fmt.Errorf("load watchers: %w", err)
+	}
+
+	var (
+		order []string
+		best  = map[string]store.Watcher{}
+		level = map[string]githubhook.WatchLevel{}
+	)
+	for _, w := range rows {
+		l, ok := githubhook.ParseWatchLevel(w.Level)
+		if !ok {
+			continue
+		}
+		if _, seen := best[w.DiscordID]; !seen {
+			order = append(order, w.DiscordID)
+		}
+		if l > level[w.DiscordID] {
+			best[w.DiscordID], level[w.DiscordID] = w, l
+		}
+	}
+
+	var out []candidate
+	for _, id := range order {
+		if w := best[id]; level[id] >= ev.Watch.Level {
+			out = append(out, candidate{id: w.GitHubID, login: w.GitHubLogin, reason: ev.Watch.Reason})
+		}
+	}
 	return out, nil
+}
+
+// repoName returns "api" for "my-org/api".
+func repoName(fullName string) string {
+	if _, name, ok := strings.Cut(fullName, "/"); ok {
+		return name
+	}
+	return fullName
 }
 
 func capList(ctx context.Context, log *slog.Logger, what string, list []string, limit int) []string {

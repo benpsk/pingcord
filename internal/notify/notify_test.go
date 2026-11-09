@@ -24,9 +24,33 @@ type fakeStore struct {
 	links      map[int64]string // github id → discord id
 	ignored    map[int64]bool
 	refreshed  map[int64]string
+	watchers   []store.Watcher
+	repos      []string
+	watchCalls int
 	linkErr    error
 	ignoredErr error
 	refreshErr error
+	watchErr   error
+	repoErr    error
+}
+
+func (f *fakeStore) WatchersFor(_ context.Context, repo string) ([]store.Watcher, error) {
+	f.watchCalls++
+	if f.watchErr != nil {
+		return nil, f.watchErr
+	}
+	var out []store.Watcher
+	for _, w := range f.watchers {
+		if w.Repo == "" || strings.EqualFold(w.Repo, repo) {
+			out = append(out, w)
+		}
+	}
+	return out, nil
+}
+
+func (f *fakeStore) RecordRepo(_ context.Context, name string) error {
+	f.repos = append(f.repos, name)
+	return f.repoErr
 }
 
 func (f *fakeStore) RefreshLogins(_ context.Context, logins map[int64]string) error {
@@ -348,4 +372,131 @@ func (c *countingDir) ResolveLogins(ctx context.Context, logins []string) (map[s
 func (c *countingDir) TeamMembers(ctx context.Context, team string) ([]githubapi.User, error) {
 	c.teamCalls++
 	return c.fakeDir.TeamMembers(ctx, team)
+}
+
+// --- watchers ------------------------------------------------------------------
+
+func newPR() githubhook.Event {
+	return githubhook.Event{
+		Name: "pull_request", Action: "opened", Repo: "my-org/api", Actor: bob,
+		Subject: githubhook.Subject{Kind: githubhook.KindPR, Number: 57, Title: "Fix rounding", Author: bob},
+		Watch:   githubhook.WatchActivity{Level: githubhook.WatchNewPRs, Reason: "new PR"},
+	}
+}
+
+func TestHandlePingsWatchers(t *testing.T) {
+	n, st, _, snd := setup()
+	st.watchers = []store.Watcher{{DiscordID: "100", Repo: "", Level: "new-prs", GitHubID: 1, GitHubLogin: "alice"}}
+
+	if _, err := n.Handle(context.Background(), newPR()); err != nil {
+		t.Fatal(err)
+	}
+	if len(snd.sent) != 1 || snd.sent[0].Content != "<@100> new PR" {
+		t.Fatalf("sent = %+v", snd.sent)
+	}
+	if !reflect.DeepEqual(st.repos, []string{"api"}) {
+		t.Fatalf("repo not recorded by name: %v", st.repos)
+	}
+}
+
+func TestHandleWatcherLevelsAndRepos(t *testing.T) {
+	review := newPR()
+	review.Name, review.Action = "pull_request_review", "submitted"
+	review.Watch = githubhook.WatchActivity{Level: githubhook.WatchPRs, Reason: "new review"}
+
+	tests := []struct {
+		name     string
+		watchers []store.Watcher
+		ev       githubhook.Event
+		want     string
+	}{
+		{
+			name:     "org-wide level too low",
+			watchers: []store.Watcher{{DiscordID: "100", Level: "new-prs", GitHubID: 1, GitHubLogin: "alice"}},
+			ev:       review,
+		},
+		{
+			name: "repo watch raises the level for that repo",
+			watchers: []store.Watcher{
+				{DiscordID: "100", Level: "new-prs", GitHubID: 1, GitHubLogin: "alice"},
+				{DiscordID: "100", Repo: "api", Level: "all", GitHubID: 1, GitHubLogin: "alice"},
+			},
+			ev:   review,
+			want: "<@100> new review",
+		},
+		{
+			name:     "watching another repo",
+			watchers: []store.Watcher{{DiscordID: "100", Repo: "web", Level: "all", GitHubID: 1, GitHubLogin: "alice"}},
+			ev:       review,
+		},
+		{
+			name:     "watcher is the actor",
+			watchers: []store.Watcher{{DiscordID: "200", Level: "all", GitHubID: 2, GitHubLogin: "bob"}},
+			ev:       newPR(),
+		},
+		{
+			name:     "unknown level is ignored",
+			watchers: []store.Watcher{{DiscordID: "100", Level: "bogus", GitHubID: 1, GitHubLogin: "alice"}},
+			ev:       newPR(),
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			n, st, _, snd := setup()
+			st.watchers = tt.watchers
+
+			if _, err := n.Handle(context.Background(), tt.ev); err != nil {
+				t.Fatal(err)
+			}
+			got := ""
+			if len(snd.sent) > 0 {
+				got = snd.sent[0].Content
+			}
+			if got != tt.want {
+				t.Fatalf("content = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestHandleWatcherReasonCombinesWithDirectReason(t *testing.T) {
+	n, st, _, snd := setup()
+	st.watchers = []store.Watcher{{DiscordID: "300", Level: "new-prs", GitHubID: 3, GitHubLogin: "carol"}}
+	ev := newPR()
+	ev.Targets = []githubhook.Target{{User: carol, Reason: githubhook.ReasonReviewRequested}}
+
+	if _, err := n.Handle(context.Background(), ev); err != nil {
+		t.Fatal(err)
+	}
+	if got := snd.sent[0].Content; got != "<@300> review requested, new PR" {
+		t.Fatalf("content = %q", got)
+	}
+}
+
+func TestHandleSkipsWatcherLookupForUnwatchableEvents(t *testing.T) {
+	n, st, _, _ := setup()
+	ev := newPR()
+	ev.Watch = githubhook.WatchActivity{}
+
+	if _, err := n.Handle(context.Background(), ev); err != nil {
+		t.Fatal(err)
+	}
+	if st.watchCalls != 0 {
+		t.Fatal("watchers should not be loaded for events no watcher cares about")
+	}
+}
+
+func TestHandleWatcherErrors(t *testing.T) {
+	n, st, _, _ := setup()
+	st.watchErr = errors.New("db gone")
+	if _, err := n.Handle(context.Background(), newPR()); err == nil {
+		t.Fatal("watcher lookup failure should fail the delivery")
+	}
+
+	n, st, _, snd := setup()
+	st.repoErr = errors.New("db busy")
+	st.watchers = []store.Watcher{{DiscordID: "100", Level: "all", GitHubID: 1, GitHubLogin: "alice"}}
+	if _, err := n.Handle(context.Background(), newPR()); err != nil || len(snd.sent) != 1 {
+		t.Fatalf("recording the repo is best effort: err=%v sent=%d", err, len(snd.sent))
+	}
 }
