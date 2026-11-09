@@ -47,6 +47,19 @@ func TestExtract(t *testing.T) {
 		{name: "URL path", text: "https://example.com/@alice"},
 		{name: "double @", text: "@@alice"},
 		{name: "non-ascii letter before @", text: "é@alice"},
+		{name: "non-ascii letter after login", text: "@aliceé"},
+		{name: "non-ascii digit after login", text: "@alice٣"},
+
+		// --- non-ASCII punctuation, symbols and scripts around mentions ---
+		{name: "curly quotes", text: "“@alice” ‘@bob’", wantUsers: []string{"alice", "bob"}},
+		{name: "em dash before", text: "thanks—@alice", wantUsers: []string{"alice"}},
+		{name: "CJK full-width comma before and after", text: "你好，@alice，请看", wantUsers: []string{"alice"}},
+		{name: "CJK text directly before", text: "请@alice看", wantUsers: nil},
+		{name: "emoji before", text: "👋@alice", wantUsers: []string{"alice"}},
+		{name: "curly apostrophe possessive", text: "@alice’s PR", wantUsers: []string{"alice"}},
+		{name: "ellipsis after", text: "@alice…", wantUsers: []string{"alice"}},
+		{name: "full-width colon after", text: "@alice：done", wantUsers: []string{"alice"}},
+		{name: "non-breaking space before", text: "cc @alice", wantUsers: []string{"alice"}},
 
 		// --- teams ---
 		{name: "team mention", text: "cc @my-org/backend", wantTeams: []string{"my-org/backend"}},

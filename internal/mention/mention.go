@@ -4,7 +4,11 @@
 // ignored.
 package mention
 
-import "strings"
+import (
+	"strings"
+	"unicode"
+	"unicode/utf8"
+)
 
 // maxLoginLen is GitHub's maximum username (and organization name) length.
 const maxLoginLen = 39
@@ -135,25 +139,27 @@ func readTeamSlug(s string) (string, int) {
 }
 
 // mentionCanStartAt reports whether the '@' at s[at] may start a mention.
-// Word characters (emails), path separators (URLs), backslashes (escapes) and
-// another '@' directly before it prevent a mention. Underscores are allowed
-// only as Markdown emphasis ("_@alice_"), not inside a word ("x_@alice").
+// Word characters (emails, "请@alice"), path separators (URLs), backslashes
+// (escapes) and another '@' directly before it prevent a mention.
+// Punctuation, symbols and spaces in any script ("“@alice”", "你好，@alice",
+// "👋@alice") do not. Underscores are allowed only as Markdown emphasis
+// ("_@alice_"), not inside a word ("x_@alice").
 func mentionCanStartAt(s string, at int) bool {
-	i := at - 1
-	for i >= 0 && s[i] == '_' {
+	i := at
+	for i > 0 && s[i-1] == '_' {
 		i--
 	}
-	if i < 0 {
+	if i == 0 {
 		return true
 	}
-	c := s[i]
-	if i < at-1 { // underscores were skipped: they must start an emphasis run
-		return !isWordByte(c)
+	r, _ := utf8.DecodeLastRuneInString(s[:i])
+	if i < at { // underscores were skipped: they must open an emphasis run
+		return !isWordRune(r)
 	}
-	if isWordByte(c) {
+	if isWordRune(r) {
 		return false
 	}
-	switch c {
+	switch r {
 	case '@', '/', '\\', '.', '-', '`':
 		return false
 	}
@@ -168,16 +174,17 @@ func mentionCanEndAt(s string, end int) bool {
 	for i < len(s) && s[i] == '_' {
 		i++
 	}
-	if i == end {
-		return end >= len(s) || !isWordByte(s[end])
+	if i >= len(s) {
+		return true
 	}
-	return i >= len(s) || !isWordByte(s[i])
+	r, _ := utf8.DecodeRuneInString(s[i:])
+	return !isWordRune(r)
 }
 
-// isWordByte treats non-ASCII bytes as word characters so that "é@alice" is
-// not a mention.
-func isWordByte(c byte) bool {
-	return isAlnum(c) || c == '_' || c >= 0x80
+// isWordRune matches GitHub's notion of a character that continues a word:
+// letters, digits and combining marks in any script, and underscore.
+func isWordRune(r rune) bool {
+	return r == '_' || unicode.IsLetter(r) || unicode.IsDigit(r) || unicode.IsMark(r)
 }
 
 func isAlnum(c byte) bool {
