@@ -63,9 +63,12 @@ Discord /admin ──── POST /discord/interactions ─▶ Caddy (HTTPS) ─�
 | Review submitted on your PR | the PR author (approved / changes requested / commented) |
 | Comment on your PR, issue or discussion | its author |
 | Inline review comment | only people @mentioned in it (the author is pinged once by the review itself) |
+| Release published | people @mentioned in the release notes (once, and never for drafts) |
 
 Never pinged: the person who triggered the event, bots (configurable), users an
 admin has ignored, and anyone without a link (they show up in `/admin unlinked`).
+To keep things bounded, at most 25 @users and 5 @teams are resolved per event,
+and only teams in `GITHUB_ORG` count. Deliveries from other orgs are ignored.
 
 ## Setup
 
@@ -173,7 +176,7 @@ startup and lists every problem it finds.
 | `DB_PATH` | | SQLite path (default `/data/pingcord.db`) |
 | `IGNORE_BOTS` | | Skip bot actors and bot recipients (default `true`) |
 | `LOG_LEVEL` | | `debug`, `info` (default), `warn`, `error` |
-| `GITHUB_API_URL` | | GitHub Enterprise Server: `https://HOST/api/v3` |
+| `GITHUB_API_URL` | | GitHub Enterprise Server: `https://HOST/api/v3` (https required) |
 
 ### Behind an existing reverse proxy
 
@@ -217,7 +220,8 @@ than a public issue.
 | `/admin` doesn't appear | Logs should show `registered /admin slash commands`; the app must be invited with `applications.commands`; you need *Manage Server* |
 | GitHub deliveries show 401 | `GITHUB_WEBHOOK_SECRET` doesn't match the webhook's secret |
 | GitHub deliveries show 415 | Set the webhook's content type to `application/json` |
-| GitHub deliveries show 502 | Discord rejected the message; see the logs, fix it, then click *Redeliver* in GitHub |
+| GitHub deliveries show 502 | Discord rejected the message, or a requested review team couldn't be looked up; see the logs, fix it, then click *Redeliver* in GitHub |
+| GitHub deliveries show 503 | Too many deliveries arriving at once; click *Redeliver* |
 | Someone isn't pinged | `/admin unlinked`; logs list `unlinked` logins for each event |
 | `GITHUB_TOKEN cannot read org members` | The token's resource owner must be the org, with *Members: Read-only*; org owners may need to approve fine-grained tokens |
 
@@ -230,7 +234,7 @@ make lint         # golangci-lint
 make build        # ./bin/pingcord
 ```
 
-Requires Go 1.25+. See [`PLAN.md`](PLAN.md) for the design.
+Requires Go 1.26+ (`go.mod` pins the patched toolchain). See [`PLAN.md`](PLAN.md) for the design.
 
 ## License
 

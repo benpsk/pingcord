@@ -3,7 +3,7 @@
 > Ping the right developer in Discord when GitHub needs them: @mentions,
 > review requests, assignments, and activity on their own PRs. Nobody else gets pinged.
 
-Status: **implemented (phases 0–8)**; phase 9 review in progress · Last updated: 2026-11-09
+Status: **implemented**; reviewed (code + security), all CRITICAL/HIGH/MEDIUM findings fixed · Last updated: 2026-11-09
 
 ---
 
@@ -94,7 +94,11 @@ future event type work without extra code.
    `>` reply lines, and email addresses is ignored.
 5. **Skipped:** unlinked users (logged), ignored users, and bots (`[bot]` suffix,
    `type: Bot`).
-6. **Grouped:** each GitHub event produces one Discord message, one ping per person, with all
+6. **Releases ping once:** only `release.published` pings (GitHub also sends
+   `created` for drafts and alongside a direct publish).
+7. **Bounded:** at most 25 @users and 5 @teams are resolved per event; team
+   mentions outside `GITHUB_ORG` are ignored; events from other orgs are ignored.
+8. **Grouped:** each GitHub event produces one Discord message, one ping per person, with all
    reasons combined: `@alice (review requested, mentioned)`.
 
 ### 5.4 Message format
@@ -180,7 +184,7 @@ Team member lists are cached in memory for 10 minutes, not in the database.
 - **Admin check:** commands are hidden from non-admins in Discord *and* the server checks
   the caller against `ADMIN_DISCORD_IDS`.
 - **Request size:** bodies are capped (GitHub's maximum is 25 MB).
-- **Timeouts:** every outbound call has one: GitHub API 5 s, Discord 5 s.
+- **Timeouts:** every outbound call has one: GitHub API 10 s, Discord 10 s, /admin commands 2.5 s (Discord needs a reply within 3 s).
 - **No leaks:** error responses never include internal details.
 - **Tokens:** the GitHub token is read-only and limited to member access.
 - **SQL:** parameterized queries only.
@@ -206,8 +210,8 @@ Team member lists are cached in memory for 10 minutes, not in the database.
 - **SQLite** via `modernc.org/sqlite` (pure Go, no cgo, simple Docker builds).
 - **No web framework.** `net/http` with Go 1.22+ routing patterns.
 - **Caddy** for automatic HTTPS.
-- **Testing:** standard `testing` plus `httptest`, with real GitHub sample payloads in
-  `testdata/`.
+- **Testing:** standard `testing` plus `httptest`, with GitHub sample payloads in
+  `internal/githubhook/testdata/`.
 
 ## 12. Project layout
 
@@ -222,7 +226,7 @@ internal/notify/               resolve → filter → group → build Discord me
 internal/discord/              webhook client (timeout, 429 retry)
 internal/discordcmd/           interactions: Ed25519 check, /admin handlers, autocomplete, registration
 internal/server/               HTTP routes + middleware (body limit, logging, recover)
-testdata/github/               sample webhook payloads
+internal/githubhook/testdata/  sample webhook payloads
 Dockerfile
 docker-compose.yml             app + caddy, volumes
 Caddyfile.example
@@ -244,7 +248,7 @@ LICENSE                        MIT
 | 6 | `server`: end-to-end GitHub flow | ✅ Done: handler tests + end-to-end boot test (signed webhook against fake GitHub/Discord APIs) |
 | 7 | `discordcmd`: Ed25519 check, `/admin` commands, autocomplete, registration | ✅ Done: signed interaction tests, admin/guild/DM checks, autocomplete, registration |
 | 8 | Packaging: Dockerfile, compose + Caddy, `.env.example`, README setup guide | ⚠️ Files done; image build not verified locally (no Docker daemon). CI builds and smoke-tests it; real-org test pending |
-| 9 | Review: code review + security review, coverage ≥ 80% | No CRITICAL or HIGH findings open |
+| 9 | Review: code review + security review, coverage ≥ 80% | ✅ Done: 0 CRITICAL; 2 HIGH, 7 MEDIUM and the cheap LOW findings fixed; govulncheck clean; coverage ≥ 85% per package |
 
 ## 14. Setup steps (will be in the README)
 
@@ -276,3 +280,13 @@ LICENSE                        MIT
 - Per-user preferences (mute event types, quiet hours, DM instead of the channel)
 - GitHub App authentication
 - Multiple orgs or channels (route by repo)
+
+## 17. Known limitations (accepted after review)
+
+- Indented code blocks and lazy block-quote continuation lines are scanned for mentions.
+- No de-duplication by `X-GitHub-Delivery`: a manual Redeliver of a delivery
+  that actually succeeded pings again.
+- After a GitHub rename, `/admin unignore <new-login>` works only once a payload
+  containing that user has been seen (stored login is refreshed from payloads).
+- Interactions accept a 5-minute timestamp window without a nonce (replay
+  requires breaking TLS).
