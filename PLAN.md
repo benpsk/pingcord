@@ -3,7 +3,7 @@
 > Ping the right developer in Discord when GitHub needs them: @mentions,
 > review requests, assignments, and activity on their own PRs. Nobody else gets pinged.
 
-Status: **planned, not started** · Last updated: 2026-11-09
+Status: **implemented (phases 0–8)**; phase 9 review in progress · Last updated: 2026-11-09
 
 ---
 
@@ -237,13 +237,13 @@ LICENSE                        MIT
 |---|---|---|
 | 0 | Scaffold: module, layout, Makefile (`test`, `lint`, `cover`), CI (`go vet`, golangci-lint incl. staticcheck + gosec, `go test -race`, govulncheck) | ✅ Done: all checks pass locally |
 | 1 | `mention`: parser | ✅ Done: 59 table cases + fuzz test (11M runs, no panics), 98% coverage |
-| 2 | `config` + `store`: env validation, migrations, repository CRUD | Tests against a temporary SQLite file |
-| 3 | `githubhook`: signature check + event → recipients (catch-all + specific handlers + noise rules) | Real sample payloads for each event in §5 produce the expected recipients |
-| 4 | `githubapi`: org/team members, username→ID with cache | Tests against an `httptest` fake of the GitHub API |
-| 5 | `notify` + `discord`: message builder + client | Golden-file tests for the message JSON; fake Discord covers 429 and 5xx |
-| 6 | `server`: end-to-end GitHub flow | A signed payload in produces the exact Discord request out |
-| 7 | `discordcmd`: Ed25519 check, `/admin` commands, autocomplete, registration | Signed interaction fixtures, admin check, ephemeral replies |
-| 8 | Packaging: Dockerfile, compose + Caddy, `.env.example`, README setup guide | `docker compose up` works locally with a tunnel (e.g. cloudflared) and a real test org |
+| 2 | `config` + `store`: env validation, migrations, repository CRUD | ✅ Done: config 100%, store 85% coverage (temp SQLite files) |
+| 3 | `githubhook`: signature check + event → recipients (catch-all + specific handlers + noise rules) | ✅ Done: 22 payload fixtures + GitHub docs signature test vector |
+| 4 | `githubapi`: org/team members, username→ID with cache | ✅ Done: fake GitHub API; cross-host pagination refused; stale-cache fallback |
+| 5 | `notify` + `discord`: message builder + client | ✅ Done: message builder tests; fake Discord covers 429/5xx/token redaction |
+| 6 | `server`: end-to-end GitHub flow | ✅ Done: handler tests + end-to-end boot test (signed webhook against fake GitHub/Discord APIs) |
+| 7 | `discordcmd`: Ed25519 check, `/admin` commands, autocomplete, registration | ✅ Done: signed interaction tests, admin/guild/DM checks, autocomplete, registration |
+| 8 | Packaging: Dockerfile, compose + Caddy, `.env.example`, README setup guide | ⚠️ Files done; image build not verified locally (no Docker daemon). CI builds and smoke-tests it; real-org test pending |
 | 9 | Review: code review + security review, coverage ≥ 80% | No CRITICAL or HIGH findings open |
 
 ## 14. Setup steps (will be in the README)

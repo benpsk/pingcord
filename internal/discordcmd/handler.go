@@ -13,6 +13,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/benpsk/pingcord/internal/discord"
@@ -34,18 +35,19 @@ const (
 )
 
 const (
-	maxBody        = 1 << 20
-	maxClockSkew   = 5 * time.Minute
-	commandTimeout = 2500 * time.Millisecond // Discord requires a reply within 3s
-	adminCommand   = "admin"
-	msgNotAdmin    = "Only pingcord admins can use this command."
-	msgInternalErr = "Something went wrong; check the pingcord logs."
-	msgUnknown     = "Unknown command."
+	maxBody         = 1 << 20
+	maxClockSkew    = 5 * time.Minute
+	commandTimeout  = 2500 * time.Millisecond // Discord requires a reply within 3s
+	announceTimeout = 10 * time.Second
+	adminCommand    = "admin"
+	msgNotAdmin     = "Only pingcord admins can use this command."
+	msgInternalErr  = "Something went wrong; check the pingcord logs."
+	msgUnknown      = "Unknown command."
 )
 
 // Store is the persistence the admin commands need.
 type Store interface {
-	UpsertLink(ctx context.Context, l store.Link) error
+	UpsertLink(ctx context.Context, l store.Link) ([]store.Link, error)
 	DeleteLinkByDiscordID(ctx context.Context, discordID string) (store.Link, error)
 	ListLinks(ctx context.Context) ([]store.Link, error)
 	Ignore(ctx context.Context, githubID int64, login, createdBy string) error
@@ -80,7 +82,12 @@ type Handler struct {
 	ann   Announcer
 	log   *slog.Logger
 	now   func() time.Time
+
+	background sync.WaitGroup // in-flight audit announcements
 }
+
+// Wait blocks until background audit announcements have finished.
+func (h *Handler) Wait() { h.background.Wait() }
 
 // Option configures a Handler.
 type Option func(*Handler)

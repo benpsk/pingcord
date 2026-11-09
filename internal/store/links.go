@@ -21,18 +21,27 @@ type Link struct {
 const linkColumns = `github_id, github_login, discord_id, created_by, created_at, updated_at`
 
 // UpsertLink stores l, replacing any existing link for either the GitHub
-// account or the Discord user so that both sides stay one-to-one.
-func (s *Store) UpsertLink(ctx context.Context, l Link) error {
+// account or the Discord user so that both sides stay one-to-one. It returns
+// the links that were replaced (ordered by GitHub ID).
+func (s *Store) UpsertLink(ctx context.Context, l Link) ([]Link, error) {
 	if l.GitHubID <= 0 || l.GitHubLogin == "" || l.DiscordID == "" || l.CreatedBy == "" {
-		return errors.New("upsert link: github id, login, discord id and creator are required")
+		return nil, errors.New("upsert link: github id, login, discord id and creator are required")
 	}
 	now := s.timestamp()
-	return s.inTx(ctx, func(tx *sql.Tx) error {
+	var replaced []Link
+	err := s.inTx(ctx, func(tx *sql.Tx) error {
+		var err error
+		replaced, err = queryLinksTx(ctx, tx, `SELECT `+linkColumns+` FROM links
+			WHERE (discord_id = ? AND github_id <> ?) OR (github_id = ? AND discord_id <> ?)
+			ORDER BY github_id`, l.DiscordID, l.GitHubID, l.GitHubID, l.DiscordID)
+		if err != nil {
+			return err
+		}
 		if _, err := tx.ExecContext(ctx,
 			`DELETE FROM links WHERE discord_id = ? AND github_id <> ?`, l.DiscordID, l.GitHubID); err != nil {
 			return fmt.Errorf("upsert link: clear previous discord link: %w", err)
 		}
-		_, err := tx.ExecContext(ctx, `
+		_, err = tx.ExecContext(ctx, `
 			INSERT INTO links (`+linkColumns+`) VALUES (?, ?, ?, ?, ?, ?)
 			ON CONFLICT (github_id) DO UPDATE SET
 				github_login = excluded.github_login,
@@ -45,6 +54,10 @@ func (s *Store) UpsertLink(ctx context.Context, l Link) error {
 		}
 		return nil
 	})
+	if err != nil {
+		return nil, err
+	}
+	return replaced, nil
 }
 
 // DeleteLinkByDiscordID removes the link for a Discord user and returns it.
@@ -89,8 +102,16 @@ func (s *Store) LinksByGitHubIDs(ctx context.Context, ids []int64) (map[int64]Li
 	return out, nil
 }
 
+type querier interface {
+	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
+}
+
 func (s *Store) queryLinks(ctx context.Context, query string, args ...any) ([]Link, error) {
-	rows, err := s.db.QueryContext(ctx, query, args...)
+	return queryLinksTx(ctx, s.db, query, args...)
+}
+
+func queryLinksTx(ctx context.Context, q querier, query string, args ...any) ([]Link, error) {
+	rows, err := q.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("query links: %w", err)
 	}

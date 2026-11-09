@@ -58,12 +58,25 @@ func (h *Handler) link(ctx context.Context, in *interaction, admin string, opts 
 		return msg
 	}
 
-	err := h.store.UpsertLink(ctx, store.Link{GitHubID: gh.ID, GitHubLogin: gh.Login, DiscordID: discordID, CreatedBy: admin})
+	replaced, err := h.store.UpsertLink(ctx, store.Link{GitHubID: gh.ID, GitHubLogin: gh.Login, DiscordID: discordID, CreatedBy: admin})
 	if err != nil {
 		return h.internal(ctx, "link", err)
 	}
-	h.announce(ctx, fmt.Sprintf("🔗 <@%s> linked GitHub `%s` → <@%s>", admin, gh.Login, discordID))
-	return fmt.Sprintf("Linked `%s` → <@%s>. They'll be pinged when GitHub needs them.", gh.Login, discordID)
+	note := replacedNote(replaced)
+	h.announce(fmt.Sprintf("🔗 <@%s> linked GitHub `%s` → <@%s>%s", admin, gh.Login, discordID, note))
+	return fmt.Sprintf("Linked `%s` → <@%s>%s. They'll be pinged when GitHub needs them.", gh.Login, discordID, note)
+}
+
+// replacedNote describes links removed by a relink, e.g. " (replaced `bob` → <@1>)".
+func replacedNote(replaced []store.Link) string {
+	if len(replaced) == 0 {
+		return ""
+	}
+	parts := make([]string, len(replaced))
+	for i, l := range replaced {
+		parts[i] = fmt.Sprintf("`%s` → <@%s>", l.GitHubLogin, l.DiscordID)
+	}
+	return " (replaced " + strings.Join(parts, ", ") + ")"
 }
 
 func (h *Handler) unlink(ctx context.Context, admin, discordID string) string {
@@ -77,7 +90,7 @@ func (h *Handler) unlink(ctx context.Context, admin, discordID string) string {
 	if err != nil {
 		return h.internal(ctx, "unlink", err)
 	}
-	h.announce(ctx, fmt.Sprintf("✂️ <@%s> unlinked GitHub `%s` from <@%s>", admin, l.GitHubLogin, discordID))
+	h.announce(fmt.Sprintf("✂️ <@%s> unlinked GitHub `%s` from <@%s>", admin, l.GitHubLogin, discordID))
 	return fmt.Sprintf("Unlinked `%s` from <@%s>.", l.GitHubLogin, discordID)
 }
 
@@ -137,7 +150,7 @@ func (h *Handler) ignore(ctx context.Context, admin, login string) string {
 	if err := h.store.Ignore(ctx, gh.ID, gh.Login, admin); err != nil {
 		return h.internal(ctx, "ignore", err)
 	}
-	h.announce(ctx, fmt.Sprintf("🔕 <@%s> set pingcord to ignore GitHub `%s`", admin, gh.Login))
+	h.announce(fmt.Sprintf("🔕 <@%s> set pingcord to ignore GitHub `%s`", admin, gh.Login))
 	return fmt.Sprintf("Ignoring `%s`: pingcord will never ping them.", gh.Login)
 }
 
@@ -152,7 +165,7 @@ func (h *Handler) unignore(ctx context.Context, admin, login string) string {
 	if err != nil {
 		return h.internal(ctx, "unignore", err)
 	}
-	h.announce(ctx, fmt.Sprintf("🔔 <@%s> stopped ignoring GitHub `%s`", admin, ig.GitHubLogin))
+	h.announce(fmt.Sprintf("🔔 <@%s> stopped ignoring GitHub `%s`", admin, ig.GitHubLogin))
 	return fmt.Sprintf("No longer ignoring `%s`.", ig.GitHubLogin)
 }
 
@@ -180,12 +193,20 @@ func (h *Handler) internal(ctx context.Context, op string, err error) string {
 	return msgInternalErr
 }
 
-// announce posts an audit line to the channel; mentions render but never ping.
-func (h *Handler) announce(ctx context.Context, content string) {
+// announce posts an audit line to the channel in the background, so a slow
+// Discord webhook can't push the reply past Discord's 3s interaction deadline.
+// Mentions in it render but never ping.
+func (h *Handler) announce(content string) {
 	msg := discord.Message{Content: content, AllowedMentions: discord.AllowedMentions{Parse: []string{}}}
-	if err := h.ann.Send(ctx, msg); err != nil {
-		h.log.WarnContext(ctx, "audit announcement failed", "error", err)
-	}
+	h.background.Add(1)
+	go func() {
+		defer h.background.Done()
+		ctx, cancel := context.WithTimeout(context.Background(), announceTimeout)
+		defer cancel()
+		if err := h.ann.Send(ctx, msg); err != nil {
+			h.log.Error("audit announcement failed; the change was applied", "content", content, "error", err)
+		}
+	}()
 }
 
 func optionValue(opts []option, name string) string {

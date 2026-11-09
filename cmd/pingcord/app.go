@@ -50,7 +50,7 @@ func serve(ctx context.Context, getenv func(string) string, logOut io.Writer) er
 		IsAdmin:   cfg.IsAdmin,
 	}, st, dir, sender, discordcmd.WithLogger(log))
 
-	go checkGitHubAccess(ctx, gh, log)
+	go checkGitHubAccess(ctx, gh, dir, log)
 	go registerCommands(ctx, cfg.Discord, log)
 
 	handler := server.NewHandler(server.Options{
@@ -59,7 +59,9 @@ func serve(ctx context.Context, getenv func(string) string, logOut io.Writer) er
 		Interactions:  interactions,
 		Logger:        log,
 	})
-	return listen(ctx, server.NewHTTPServer(cfg.Addr, handler), log)
+	err = listen(ctx, server.NewHTTPServer(cfg.Addr, handler), log)
+	interactions.Wait() // flush in-flight audit announcements
+	return err
 }
 
 func listen(ctx context.Context, srv *http.Server, log *slog.Logger) error {
@@ -87,8 +89,9 @@ func listen(ctx context.Context, srv *http.Server, log *slog.Logger) error {
 	return nil
 }
 
-// checkGitHubAccess verifies the token at startup and warns before it expires.
-func checkGitHubAccess(ctx context.Context, gh *githubapi.Client, log *slog.Logger) {
+// checkGitHubAccess verifies the token at startup, warns before it expires,
+// and warms the org member cache used by /admin autocomplete.
+func checkGitHubAccess(ctx context.Context, gh *githubapi.Client, dir *githubapi.Directory, log *slog.Logger) {
 	ctx, cancel := context.WithTimeout(ctx, startupCheckTimeout)
 	defer cancel()
 
@@ -103,6 +106,11 @@ func checkGitHubAccess(ctx context.Context, gh *githubapi.Client, log *slog.Logg
 		log.Warn("GITHUB_TOKEN expires soon; rotate it", "expires", expiry)
 	default:
 		log.Info("github token ok", "org", gh.Org(), "expires", expiry)
+	}
+	if err == nil {
+		if _, err := dir.OrgMembers(ctx); err != nil {
+			log.Warn("could not preload org members", "error", err)
+		}
 	}
 }
 

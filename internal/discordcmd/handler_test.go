@@ -15,6 +15,7 @@ import (
 	"net/http/httptest"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -37,12 +38,22 @@ type fakeStore struct {
 	err     error
 }
 
-func (f *fakeStore) UpsertLink(_ context.Context, l store.Link) error {
+func (f *fakeStore) UpsertLink(_ context.Context, l store.Link) ([]store.Link, error) {
 	if f.err != nil {
-		return f.err
+		return nil, f.err
 	}
-	f.links = append(f.links, l)
-	return nil
+	var kept, replaced []store.Link
+	for _, old := range f.links {
+		if (old.DiscordID == l.DiscordID) != (old.GitHubID == l.GitHubID) {
+			replaced = append(replaced, old)
+			continue
+		}
+		if old.DiscordID != l.DiscordID {
+			kept = append(kept, old)
+		}
+	}
+	f.links = append(kept, l)
+	return replaced, nil
 }
 
 func (f *fakeStore) DeleteLinkByDiscordID(_ context.Context, id string) (store.Link, error) {
@@ -93,9 +104,22 @@ func (f *fakeDir) LookupUser(_ context.Context, login string) (githubapi.User, e
 
 func (f *fakeDir) OrgMembers(context.Context) ([]githubapi.User, error) { return f.members, f.err }
 
-type fakeAnnouncer struct{ sent []discord.Message }
+type fakeAnnouncer struct {
+	mu    sync.Mutex
+	sent  []discord.Message
+	delay time.Duration
+}
 
-func (f *fakeAnnouncer) Send(_ context.Context, m discord.Message) error {
+func (f *fakeAnnouncer) Send(ctx context.Context, m discord.Message) error {
+	if f.delay > 0 {
+		select {
+		case <-time.After(f.delay):
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.sent = append(f.sent, m)
 	return nil
 }
@@ -164,6 +188,7 @@ func (hs *harness) post(t *testing.T, body string) (int, response) {
 	rec := httptest.NewRecorder()
 
 	hs.h.ServeHTTP(rec, req)
+	hs.h.Wait() // let background audit announcements finish
 
 	var resp response
 	if rec.Code == http.StatusOK {
@@ -545,5 +570,40 @@ func TestResponsesAreValidJSONWithNoNullChoices(t *testing.T) {
 
 	if !bytes.Contains(rec.Body.Bytes(), []byte(`"choices":[]`)) {
 		t.Fatalf("choices must be [] not null: %s", rec.Body.String())
+	}
+}
+
+func TestLinkReportsReplacedLinks(t *testing.T) {
+	hs := newHarness(t)
+	hs.store.links = []store.Link{{GitHubID: 2, GitHubLogin: "bob", DiscordID: userID}}
+
+	code, resp := hs.post(t, adminCmd("link", "user", userID, "github", "alice"))
+
+	expectReply(t, code, resp, "Linked `Alice`", "replaced", "`bob`")
+	if len(hs.ann.sent) != 1 || !strings.Contains(hs.ann.sent[0].Content, "`bob`") {
+		t.Fatalf("announcement should mention the replaced link: %+v", hs.ann.sent)
+	}
+}
+
+func TestSlowAnnouncementDoesNotDelayReply(t *testing.T) {
+	hs := newHarness(t)
+	hs.ann.delay = 300 * time.Millisecond
+	ts := strconv.FormatInt(hs.now.Unix(), 10)
+	body := adminCmd("link", "user", userID, "github", "alice")
+	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(body))
+	req.Header.Set("X-Signature-Ed25519", hex.EncodeToString(ed25519.Sign(hs.priv, []byte(ts+body))))
+	req.Header.Set("X-Signature-Timestamp", ts)
+	rec := httptest.NewRecorder()
+
+	start := time.Now()
+	hs.h.ServeHTTP(rec, req)
+	elapsed := time.Since(start)
+
+	if rec.Code != http.StatusOK || elapsed >= hs.ann.delay {
+		t.Fatalf("reply took %v (announcement delay %v)", elapsed, hs.ann.delay)
+	}
+	hs.h.Wait()
+	if len(hs.ann.sent) != 1 {
+		t.Fatal("announcement should still be delivered after the reply")
 	}
 }

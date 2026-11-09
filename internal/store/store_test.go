@@ -29,7 +29,7 @@ func TestOpenIsIdempotentAcrossRestarts(t *testing.T) {
 	if err != nil {
 		t.Fatalf("first Open: %v", err)
 	}
-	if err := s1.UpsertLink(ctx, Link{GitHubID: 1, GitHubLogin: "alice", DiscordID: "100", CreatedBy: "9"}); err != nil {
+	if _, err := s1.UpsertLink(ctx, Link{GitHubID: 1, GitHubLogin: "alice", DiscordID: "100", CreatedBy: "9"}); err != nil {
 		t.Fatalf("UpsertLink: %v", err)
 	}
 	_ = s1.Close()
@@ -80,7 +80,16 @@ func TestUpsertLinkReplacesBothSides(t *testing.T) {
 	*now = now.Add(time.Minute)
 
 	// Discord user 100 is now linked to GitHub 2: both old links must go.
-	mustUpsert(t, s, Link{GitHubID: 2, GitHubLogin: "bob", DiscordID: "100", CreatedBy: "8"})
+	replaced, err := s.UpsertLink(ctx, Link{GitHubID: 2, GitHubLogin: "bob", DiscordID: "100", CreatedBy: "8"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(replaced) != 2 || replaced[0].GitHubID != 1 || replaced[1].DiscordID != "200" {
+		t.Fatalf("replaced = %+v, want alice→100 and bob→200", replaced)
+	}
+	if again, _ := s.UpsertLink(ctx, Link{GitHubID: 2, GitHubLogin: "bob", DiscordID: "100", CreatedBy: "8"}); len(again) != 0 {
+		t.Fatalf("re-linking the same pair should replace nothing, got %+v", again)
+	}
 
 	links, _ := s.ListLinks(ctx)
 	if len(links) != 1 || links[0].GitHubID != 2 || links[0].DiscordID != "100" || links[0].CreatedBy != "8" {
@@ -98,7 +107,7 @@ func TestUpsertLinkValidates(t *testing.T) {
 		{GitHubID: 1, DiscordID: "1", CreatedBy: "9"},
 		{GitHubID: 1, GitHubLogin: "a", CreatedBy: "9"},
 	} {
-		if err := s.UpsertLink(context.Background(), l); err == nil {
+		if _, err := s.UpsertLink(context.Background(), l); err == nil {
 			t.Errorf("UpsertLink(%+v) expected error", l)
 		}
 	}
@@ -229,8 +238,11 @@ func TestClosedStoreReturnsErrors(t *testing.T) {
 	_ = s.Close()
 
 	checks := map[string]error{
-		"ListLinks":        func() error { _, err := s.ListLinks(ctx); return err }(),
-		"UpsertLink":       s.UpsertLink(ctx, Link{GitHubID: 1, GitHubLogin: "a", DiscordID: "1", CreatedBy: "9"}),
+		"ListLinks": func() error { _, err := s.ListLinks(ctx); return err }(),
+		"UpsertLink": func() error {
+			_, err := s.UpsertLink(ctx, Link{GitHubID: 1, GitHubLogin: "a", DiscordID: "1", CreatedBy: "9"})
+			return err
+		}(),
 		"LinksByGitHubIDs": func() error { _, err := s.LinksByGitHubIDs(ctx, []int64{1}); return err }(),
 		"IgnoredIDs":       func() error { _, err := s.IgnoredIDs(ctx, []int64{1}); return err }(),
 		"ListIgnored":      func() error { _, err := s.ListIgnored(ctx); return err }(),
@@ -250,7 +262,7 @@ func TestClosedStoreReturnsErrors(t *testing.T) {
 
 func mustUpsert(t *testing.T, s *Store, l Link) {
 	t.Helper()
-	if err := s.UpsertLink(context.Background(), l); err != nil {
+	if _, err := s.UpsertLink(context.Background(), l); err != nil {
 		t.Fatalf("UpsertLink(%+v): %v", l, err)
 	}
 }
