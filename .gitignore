@@ -1,0 +1,16 @@
+# Build output
+/bin/
+coverage.out
+
+# Secrets and local data
+.env
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+/data/
+
+# Editors / OS
+.idea/
+.vscode/
+.DS_Store
