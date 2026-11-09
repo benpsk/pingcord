@@ -66,6 +66,11 @@ func TestRunHealthcheck(t *testing.T) {
 		t.Fatalf("healthy server: %v", err)
 	}
 
+	addr := map[string]string{"LISTEN_ADDR": "127.0.0.1:" + port, "PORT": "1"}
+	if err := run(context.Background(), []string{"-healthcheck"}, envFunc(addr), &out, &out); err != nil {
+		t.Fatalf("healthcheck should use LISTEN_ADDR: %v", err)
+	}
+
 	srv.Close()
 	if err := run(context.Background(), []string{"-healthcheck"}, envFunc(map[string]string{"PORT": port}), &out, &out); err == nil {
 		t.Fatal("closed server should fail the healthcheck")

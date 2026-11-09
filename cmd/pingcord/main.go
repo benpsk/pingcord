@@ -8,6 +8,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -51,20 +52,34 @@ func run(ctx context.Context, args []string, getenv func(string) string, stdout,
 		_, err := fmt.Fprintln(stdout, version)
 		return err
 	case *healthcheck:
-		return checkHealth(ctx, getenv("PORT"))
+		return checkHealth(ctx, healthAddr(getenv))
 	}
 	return serve(ctx, getenv, stderr)
 }
 
-// checkHealth lets distroless images (no curl) run a Docker HEALTHCHECK.
-func checkHealth(ctx context.Context, port string) error {
+// healthAddr is where the local server listens: LISTEN_ADDR, else
+// 127.0.0.1:PORT (default 8080). A wildcard host is checked via loopback.
+func healthAddr(getenv func(string) string) string {
+	if addr := strings.TrimSpace(getenv("LISTEN_ADDR")); addr != "" {
+		if host, port, err := net.SplitHostPort(addr); err == nil && (host == "" || host == "0.0.0.0" || host == "::") {
+			return net.JoinHostPort("127.0.0.1", port)
+		}
+		return addr
+	}
+	port := strings.TrimSpace(getenv("PORT"))
 	if port == "" {
 		port = "8080"
 	}
+	return net.JoinHostPort("127.0.0.1", port)
+}
+
+// checkHealth lets distroless images (no curl) and deploy scripts check the
+// running server.
+func checkHealth(ctx context.Context, addr string) error {
 	ctx, cancel := context.WithTimeout(ctx, healthcheckTimeout)
 	defer cancel()
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://127.0.0.1:"+strings.TrimSpace(port)+"/healthz", nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+addr+"/healthz", nil)
 	if err != nil {
 		return fmt.Errorf("healthcheck: %w", err)
 	}

@@ -81,6 +81,18 @@ func TestLoadOptionalOverrides(t *testing.T) {
 	}
 }
 
+func TestLoadListenAddr(t *testing.T) {
+	env := validEnv()
+	env["LISTEN_ADDR"] = "127.0.0.1:8090"
+	env["PORT"] = "9000" // LISTEN_ADDR wins
+
+	cfg, err := Load(getenvFrom(env))
+
+	if err != nil || cfg.Addr != "127.0.0.1:8090" {
+		t.Fatalf("Addr = %q, err = %v", cfg.Addr, err)
+	}
+}
+
 func TestLoadErrors(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -104,6 +116,8 @@ func TestLoadErrors(t *testing.T) {
 		{name: "empty admin list", mutate: func(e map[string]string) { e["ADMIN_DISCORD_IDS"] = " , " }, wantErr: []string{"ADMIN_DISCORD_IDS"}},
 		{name: "bad port", mutate: func(e map[string]string) { e["PORT"] = "70000" }, wantErr: []string{"PORT"}},
 		{name: "non-numeric port", mutate: func(e map[string]string) { e["PORT"] = "http" }, wantErr: []string{"PORT"}},
+		{name: "listen addr without port", mutate: func(e map[string]string) { e["LISTEN_ADDR"] = "127.0.0.1" }, wantErr: []string{"LISTEN_ADDR"}},
+		{name: "listen addr bad port", mutate: func(e map[string]string) { e["LISTEN_ADDR"] = "127.0.0.1:99999" }, wantErr: []string{"LISTEN_ADDR"}},
 		{name: "bad bool", mutate: func(e map[string]string) { e["IGNORE_BOTS"] = "maybe" }, wantErr: []string{"IGNORE_BOTS"}},
 		{name: "bad github api url", mutate: func(e map[string]string) { e["GITHUB_API_URL"] = "ftp://x" }, wantErr: []string{"GITHUB_API_URL"}},
 		{name: "plain http to a remote host", mutate: func(e map[string]string) { e["GITHUB_API_URL"] = "http://ghe.example.com/api/v3" }, wantErr: []string{"GITHUB_API_URL", "https"}},

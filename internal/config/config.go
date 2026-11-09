@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/url"
 	"regexp"
 	"slices"
@@ -68,7 +69,7 @@ func Load(getenv func(string) string) (Config, error) {
 	l := loader{getenv: getenv}
 
 	cfg := Config{
-		Addr:            ":" + l.port("PORT"),
+		Addr:            l.listenAddr(),
 		DBPath:          l.optional("DB_PATH", defaultDBPath),
 		LogLevel:        l.logLevel("LOG_LEVEL"),
 		IgnoreBots:      l.boolean("IGNORE_BOTS", true),
@@ -159,6 +160,20 @@ func (l *loader) apiURL(key, def string) string {
 
 func isLoopback(host string) bool {
 	return host == "localhost" || host == "127.0.0.1" || host == "::1"
+}
+
+// listenAddr is LISTEN_ADDR ("127.0.0.1:8090") if set, else ":" + PORT.
+func (l *loader) listenAddr() string {
+	v := l.value("LISTEN_ADDR")
+	if v == "" {
+		return ":" + l.port("PORT")
+	}
+	_, port, err := net.SplitHostPort(v)
+	n, perr := strconv.Atoi(port)
+	if err != nil || perr != nil || n < 1 || n > 65535 {
+		l.fail("LISTEN_ADDR", "must be host:port, e.g. 127.0.0.1:8090")
+	}
+	return v
 }
 
 func (l *loader) port(key string) string {
