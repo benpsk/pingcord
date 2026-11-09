@@ -23,8 +23,8 @@ jobs:
     needs: ci
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-go@v6
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
       - name: Build
@@ -32,7 +32,7 @@ jobs:
           GOOS: linux
           GOARCH: ${{ vars.DEPLOY_GOARCH || 'amd64' }}
         run: make build VERSION=${{ github.sha }}
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: pingcord
           path: bin/pingcord
@@ -45,8 +45,8 @@ jobs:
     env:
       SSH_TARGET: ${{ secrets.DEPLOY_SSH_USER }}@${{ secrets.DEPLOY_SSH_HOST }}
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
         with:
           name: pingcord
           path: release
