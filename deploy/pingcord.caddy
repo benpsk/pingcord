@@ -1,0 +1,16 @@
+# pingcord's site for the host Caddy. The deploy workflow fills in the domain
+# (GitHub variable PINGCORD_DOMAIN) and copies it to /etc/caddy/sites/.
+{$PINGCORD_DOMAIN} {
+	request_body {
+		max_size 26MB
+	}
+
+	# Only pingcord's endpoints; everything else is 404.
+	@pingcord path /github/webhook /discord/interactions /healthz
+	handle @pingcord {
+		reverse_proxy 127.0.0.1:8090
+	}
+	handle {
+		respond 404
+	}
+}

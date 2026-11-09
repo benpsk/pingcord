@@ -1,9 +1,10 @@
 name: ci
 
+# Pull requests run this directly; pushes to main run it through deploy.yml
+# (which deploys only if it passes).
 on:
-  push:
-    branches: [main]
   pull_request:
+  workflow_call:
 
 permissions:
   contents: read

@@ -38,8 +38,9 @@ they're needed.
   so username changes on either side don't break anything.
 - **Managed from Discord.** Admin-only `/admin link`, `/admin unlinked` and so
   on, with autocomplete from your org's member list. No redeploys.
-- **Small and self-contained.** One static Go binary plus SQLite. Runs in a
-  distroless container behind Caddy for automatic HTTPS.
+- **Small and self-contained.** One static Go binary plus SQLite. Runs under
+  systemd (or Docker) behind Caddy for automatic HTTPS, with auto-deploy from
+  GitHub Actions.
 
 ## How it works
 
@@ -72,8 +73,8 @@ and only teams in `GITHUB_ORG` count. Deliveries from other orgs are ignored.
 
 ## Setup
 
-You need a server with Docker, a domain pointing at it, admin rights in your
-GitHub org, and "Manage Server" in your Discord server. It takes about 15 minutes.
+You need a Linux server, a domain pointing at it, admin rights in your GitHub
+org, and "Manage Server" in your Discord server. It takes about 20 minutes.
 
 ### 1. Discord
 
@@ -104,14 +105,17 @@ GitHub org, and "Manage Server" in your Discord server. It takes about 15 minute
 
 ### 3. Server
 
-```sh
-git clone https://github.com/benpsk/pingcord && cd pingcord
-cp .env.example .env     # fill in every value
-docker compose up -d
-docker compose logs -f pingcord
-```
+Follow [`deploy/README.md`](deploy/README.md). In short: install Caddy on the
+host, put the values above in `/etc/pingcord/pingcord.env`, install the
+systemd unit, add the deploy secrets to the repo's `production` environment,
+and push to `main`. GitHub Actions builds and deploys pingcord from then on.
 
-You should see `registered /admin slash commands` and `github token ok`.
+Check it with `journalctl -u pingcord -f`. You should see
+`registered /admin slash commands` and `github token ok`.
+
+Prefer Docker? `cp .env.example .env && docker compose up -d` runs the same
+thing on `127.0.0.1:8090`; point your reverse proxy at it with
+[`deploy/pingcord.caddy`](deploy/pingcord.caddy).
 
 ### 4. Connect the endpoints
 
@@ -171,30 +175,12 @@ startup and lists every problem it finds.
 | `DISCORD_BOT_TOKEN` | ✓ | Used only to register `/admin` |
 | `DISCORD_GUILD_ID` | ✓ | Your Discord server ID |
 | `ADMIN_DISCORD_IDS` | ✓ | Comma-separated Discord user IDs allowed to use `/admin` |
-| `PINGCORD_DOMAIN` | compose | Domain Caddy serves and gets a certificate for |
-| `PORT` | | Listen port (default `8080`) |
-| `DB_PATH` | | SQLite path (default `/data/pingcord.db`) |
+| `LISTEN_ADDR` | | Listen address, e.g. `127.0.0.1:8090` (overrides `PORT`; set by the systemd unit) |
+| `PORT` | | Listen port on all interfaces (default `8080`) |
+| `DB_PATH` | | SQLite path (default `/data/pingcord.db`; the systemd unit uses `/var/lib/pingcord/pingcord.db`) |
 | `IGNORE_BOTS` | | Skip bot actors and bot recipients (default `true`) |
 | `LOG_LEVEL` | | `debug`, `info` (default), `warn`, `error` |
 | `GITHUB_API_URL` | | GitHub Enterprise Server: `https://HOST/api/v3` (https required) |
-
-### Behind an existing reverse proxy
-
-Remove the `caddy` service from `docker-compose.yml`, publish `127.0.0.1:8080`
-from `pingcord`, and proxy `/github/webhook` and `/discord/interactions` to it.
-With Caddy on the host:
-
-```
-pingcord.example.com {
-	@pingcord path /github/webhook /discord/interactions /healthz
-	handle @pingcord {
-		reverse_proxy 127.0.0.1:8080
-	}
-	handle {
-		respond 404
-	}
-}
-```
 
 ## Security
 
@@ -206,8 +192,12 @@ pingcord.example.com {
   defanged and can't ping anyone.
 - **GitHub token:** read-only and limited to member access. The webhook URL and
   tokens never appear in logs or errors.
-- **Container:** runs as non-root in a distroless image, with a read-only root
+- **Process isolation:** under systemd it runs as a throwaway unprivileged
+  user that can only write its own state directory, listening on loopback
+  only. The Docker image is distroless and non-root, with a read-only root
   filesystem and all capabilities dropped.
+- **Deploy secrets:** SSH credentials live in a GitHub environment's
+  encrypted secrets, and the deploy user can run exactly two root commands.
 
 Found a vulnerability? Please open a private security advisory on GitHub rather
 than a public issue.
@@ -216,7 +206,7 @@ than a public issue.
 
 | Symptom | Check |
 |---|---|
-| Discord won't save the Interactions Endpoint URL | Is the domain reachable over HTTPS? Is `DISCORD_PUBLIC_KEY` correct? Check `docker compose logs caddy` |
+| Discord won't save the Interactions Endpoint URL | Is the domain reachable over HTTPS? Is `DISCORD_PUBLIC_KEY` correct? Check `journalctl -u caddy` |
 | `/admin` doesn't appear | Logs should show `registered /admin slash commands`; the app must be invited with `applications.commands`; you need *Manage Server* |
 | GitHub deliveries show 401 | `GITHUB_WEBHOOK_SECRET` doesn't match the webhook's secret |
 | GitHub deliveries show 415 | Set the webhook's content type to `application/json` |

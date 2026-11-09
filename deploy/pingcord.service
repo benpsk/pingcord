@@ -1,0 +1,34 @@
+# /etc/systemd/system/pingcord.service — installed once by hand (see
+# deploy/README.md); the deploy workflow warns if this file changes.
+[Unit]
+Description=pingcord (GitHub -> Discord pings)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+ExecStart=/opt/pingcord/pingcord
+# Secrets: GITHUB_*, DISCORD_*, ADMIN_DISCORD_IDS (root-only, chmod 600)
+EnvironmentFile=/etc/pingcord/pingcord.env
+# Loopback only: the host Caddy is the only way in.
+Environment=LISTEN_ADDR=127.0.0.1:8090
+Environment=DB_PATH=/var/lib/pingcord/pingcord.db
+Restart=on-failure
+RestartSec=5
+
+# Sandboxing: a throwaway unprivileged user that can only write its state dir.
+DynamicUser=yes
+StateDirectory=pingcord
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+LockPersonality=yes
+MemoryMax=256M
+
+[Install]
+WantedBy=multi-user.target

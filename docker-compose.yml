@@ -1,11 +1,9 @@
-# pingcord + Caddy (automatic HTTPS).
+# Optional: run pingcord in Docker instead of the systemd binary that
+# deploy.yml installs. HTTPS comes from a reverse proxy on the host (Caddy,
+# see deploy/pingcord.caddy), which reaches it on 127.0.0.1:8090.
 #
 #   cp .env.example .env   # fill it in
 #   docker compose up -d
-#
-# Already running Caddy or another proxy on the host? Delete the `caddy`
-# service, uncomment `ports` under `pingcord`, and proxy
-# /github/webhook and /discord/interactions to 127.0.0.1:8080.
 
 x-logging: &logging
   driver: json-file
@@ -27,27 +25,8 @@ services:
     mem_limit: 256m
     pids_limit: 100
     logging: *logging
-    expose: ["8080"]
-    # ports: ["127.0.0.1:8080:8080"]
-
-  caddy:
-    image: caddy:2-alpine
-    restart: unless-stopped
     ports:
-      - "80:80"
-      - "443:443"
-      - "443:443/udp"
-    environment:
-      PINGCORD_DOMAIN: ${PINGCORD_DOMAIN:?set PINGCORD_DOMAIN in .env}
-    volumes:
-      - ./Caddyfile:/etc/caddy/Caddyfile:ro
-      - caddy-data:/data
-      - caddy-config:/config
-    logging: *logging
-    depends_on:
-      - pingcord
+      - "127.0.0.1:8090:8080"
 
 volumes:
   pingcord-data:
-  caddy-data:
-  caddy-config:
