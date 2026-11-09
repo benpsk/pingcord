@@ -63,6 +63,7 @@ func Parse(name string, body []byte) (Event, error) {
 		ev.Mentions, ev.Excerpt = textMentions(&p, primary)
 	}
 	ev.Targets = roleTargets(name, &p, ev.Subject)
+	ev.Watch = watchActivity(name, &p)
 	ev.Users = collectUsers(&p, primary)
 	return ev, nil
 }

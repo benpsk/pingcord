@@ -72,6 +72,7 @@ type Event struct {
 	Targets  []Target
 	Mentions mention.Result   // @mentions in the new text (only new ones on edits)
 	Users    map[int64]string // every id → login seen, for rename tracking
+	Watch    WatchActivity    // which watchers this event concerns
 }
 
 // ghUser mirrors GitHub's user object.
@@ -103,6 +104,8 @@ type ghObject struct {
 	HTMLURL     string  `json:"html_url"`
 	State       string  `json:"state"`
 	CommitID    string  `json:"commit_id"`
+	Draft       bool    `json:"draft"`
+	Merged      bool    `json:"merged"`
 	User        *ghUser `json:"user"`
 	Author      *ghUser `json:"author"`
 	PullRequest *struct {
