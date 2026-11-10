@@ -165,15 +165,16 @@ change is posted to the channel as an audit line that doesn't ping anyone.
 | `/admin unlinked` | Org members without a link |
 | `/admin ignore github` | Never ping this GitHub user |
 | `/admin unignore github` | Undo `ignore` |
-| `/admin watch user level [repo]` | Make someone a **watcher** (see below) |
-| `/admin unwatch user [repo]` | Stop a watch (no repo = the org-wide one) |
+| `/admin watch user level repo` | Make someone a **watcher** (see below) |
+| `/admin unwatch user repo` | Stop a watch (`*` = the org-wide one) |
 
 ### Watchers
 
 A team lead may want to hear about activity even when nobody mentions them.
-`/admin watch` makes a linked user a watcher for the whole org, or for one
-repo when `repo` is given (`api` or `org/api`; it autocompletes from repos
-pingcord has seen).
+`/admin watch` makes a linked user a watcher for one repo (`api` or
+`org/api`; it autocompletes from the org's repos) or, with repo `*`, for the
+whole org. `repo` is required so an org-wide watch is never created by
+accident.
 
 | Level | Pinged for |
 |---|---|

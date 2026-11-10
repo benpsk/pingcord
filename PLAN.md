@@ -278,7 +278,7 @@ LICENSE                        MIT
 
 ## 15b. Watchers (added after launch)
 
-Admin-configured watchers (`/admin watch user level [repo]`) are pinged for
+Admin-configured watchers (`/admin watch user level repo`, repo `*` = whole org) are pinged for
 activity without being mentioned: org-wide or per repo, at `new-prs`, `prs` or
 `all`. Stored per Discord user in `watchers` (migration 002), joined with
 `links` at notify time; the highest level across a person's org-wide and repo
