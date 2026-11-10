@@ -59,7 +59,7 @@ func levelOpt() commandOption {
 }
 
 func repoOpt() commandOption {
-	return commandOption{Type: optString, Name: "repo", Description: "Repository (leave empty for the whole org)", Autocomplete: true}
+	return commandOption{Type: optString, Name: "repo", Description: "Repository, or * for the whole org", Required: true, Autocomplete: true}
 }
 
 // commands is the full /admin command tree.
@@ -79,7 +79,7 @@ func commands() []commandDef {
 			sub("ignore", "Never ping a GitHub user", githubOpt("GitHub username to ignore")),
 			sub("unignore", "Allow pinging an ignored GitHub user again", githubOpt("Ignored GitHub username")),
 			sub("watch", "Ping someone for org or repo activity, even without a mention", userOpt(), levelOpt(), repoOpt()),
-			sub("unwatch", "Stop a watch (leave repo empty for the org-wide one)", userOpt(), repoOpt()),
+			sub("unwatch", "Stop a watch (repo * is the org-wide one)", userOpt(), repoOpt()),
 		},
 	}}
 }

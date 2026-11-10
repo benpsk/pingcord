@@ -69,17 +69,27 @@ func (h *Handler) unwatch(ctx context.Context, admin string, opts []option) stri
 	return fmt.Sprintf("<@%s> no longer watches %s.", discordID, where)
 }
 
-// repoOption reads the optional repo ("api" or "org/api"; empty = whole
-// org). On failure it returns the reply to show instead.
+// orgWideRepo is the repo option value meaning "the whole org"; it is stored
+// as an empty repo.
+const orgWideRepo = "*"
+
+// repoOption reads the required repo ("api", "org/api", or "*" for the whole
+// org, returned as ""). On failure it returns the reply to show instead.
 func (h *Handler) repoOption(opts []option) (string, string) {
-	repo := optionValue(opts, "repo")
+	repo := strings.TrimSpace(optionValue(opts, "repo"))
+	switch repo {
+	case orgWideRepo:
+		return "", ""
+	case "":
+		return "", "Missing `repo` option; pick a repository, or `*` for the whole org."
+	}
 	if org, name, ok := strings.Cut(repo, "/"); ok {
 		if !strings.EqualFold(org, h.cfg.Org) {
 			return "", fmt.Sprintf("Only repositories in %s can be watched.", h.cfg.Org)
 		}
 		repo = name
 	}
-	if repo != "" && !repoNameRe.MatchString(repo) {
+	if !repoNameRe.MatchString(repo) {
 		return "", fmt.Sprintf("`%s` isn't a valid repository name.", sanitize(repo))
 	}
 	return repo, ""

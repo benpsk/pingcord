@@ -55,8 +55,18 @@ func TestRegisterCommands(t *testing.T) {
 			t.Errorf("watch level option = %+v", level)
 		}
 		repo := opts[2].(map[string]any)
-		if repo["name"] != "repo" || repo["required"] == true || repo["autocomplete"] != true {
+		if repo["name"] != "repo" || repo["required"] != true || repo["autocomplete"] != true {
 			t.Errorf("watch repo option = %+v", repo)
+		}
+	}
+	for _, o := range gotBody[0]["options"].([]any) {
+		sub := o.(map[string]any)
+		if sub["name"] != "unwatch" {
+			continue
+		}
+		repo := sub["options"].([]any)[1].(map[string]any)
+		if repo["name"] != "repo" || repo["required"] != true {
+			t.Errorf("unwatch repo option = %+v", repo)
 		}
 	}
 }
