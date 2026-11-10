@@ -808,8 +808,44 @@ func TestAutocompleteReposListsOrgReposThenSeenOnes(t *testing.T) {
 
 	// GitHub's order (most recently pushed first), then seen repos GitHub
 	// didn't list, without case-insensitive duplicates.
-	if strings.Join(got, ",") != "private-api,api,deleted-repo" {
+	if strings.Join(got, ",") != "*,private-api,api,deleted-repo" {
 		t.Fatalf("choices = %v", got)
+	}
+}
+
+func TestAutocompleteReposOffersWholeOrg(t *testing.T) {
+	tests := []struct {
+		query string
+		want  string
+	}{
+		{"*", "*"},
+		{"org", "*"},
+		{"Whole", "*"},
+		{"sha", "shagan"},
+		{"r", "repo-r"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.query, func(t *testing.T) {
+			hs := linkedHarness(t)
+			hs.dir.repos = []string{"shagan", "repo-r"}
+
+			if got := repoChoices(t, hs, tt.query); strings.Join(got, ",") != tt.want {
+				t.Fatalf("choices = %v, want %s", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestAutocompleteReposCapsAtLimitWithWholeOrg(t *testing.T) {
+	hs := linkedHarness(t)
+	for i := 0; i < 30; i++ {
+		hs.dir.repos = append(hs.dir.repos, fmt.Sprintf("repo-%02d", i))
+	}
+
+	got := repoChoices(t, hs, "")
+
+	if len(got) != maxChoices || got[0] != "*" {
+		t.Fatalf("got %d choices, first %q", len(got), got[0])
 	}
 }
 

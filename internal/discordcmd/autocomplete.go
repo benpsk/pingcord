@@ -24,7 +24,7 @@ func (h *Handler) autocomplete(ctx context.Context, in *interaction) []choice {
 	}
 
 	if field == "repo" {
-		return rankChoices(h.candidateRepos(ctx), query)
+		return h.repoChoices(ctx, query)
 	}
 	logins, err := h.candidateLogins(ctx, sub)
 	if err != nil {
@@ -32,6 +32,27 @@ func (h *Handler) autocomplete(ctx context.Context, in *interaction) []choice {
 		return nil
 	}
 	return rankChoices(logins, query)
+}
+
+// orgWideChoice is offered first for the repo option while the query could
+// still mean it (empty, "*", or the start of "whole org" or "org").
+var orgWideChoice = choice{Name: "* (whole org)", Value: orgWideRepo}
+
+func (h *Handler) repoChoices(ctx context.Context, query string) []choice {
+	repos := rankChoices(h.candidateRepos(ctx), query)
+	if !matchesOrgWide(query) {
+		return repos
+	}
+	out := append([]choice{orgWideChoice}, repos...)
+	if len(out) > maxChoices {
+		out = out[:maxChoices]
+	}
+	return out
+}
+
+func matchesOrgWide(query string) bool {
+	return query == "" || query == orgWideRepo ||
+		strings.HasPrefix("whole org", query) || strings.HasPrefix("org", query)
 }
 
 // candidateRepos returns the org's repos from GitHub (most recently pushed
