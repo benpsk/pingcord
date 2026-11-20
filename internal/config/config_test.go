@@ -160,3 +160,31 @@ func TestLoadErrorsNeverLeakSecrets(t *testing.T) {
 		}
 	}
 }
+
+func TestTelegramConfiguration(t *testing.T) {
+	env := map[string]string{
+		"NOTIFICATION_PROVIDER": "telegram", "GITHUB_WEBHOOK_SECRET": "0123456789abcdef",
+		"GITHUB_TOKEN": "github-token", "GITHUB_ORG": "acme", "TELEGRAM_BOT_TOKEN": "123:secret",
+		"TELEGRAM_WEBHOOK_SECRET": "0123456789abcdef", "ADMIN_TELEGRAM_IDS": "123,456",
+	}
+	cfg, err := Load(getenvFrom(env))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Provider != "telegram" || cfg.Discord.BotToken != "" || len(cfg.Telegram.AdminIDs) != 2 {
+		t.Fatal("wrong platform config")
+	}
+	for _, key := range []string{"TELEGRAM_BOT_TOKEN", "TELEGRAM_WEBHOOK_SECRET", "ADMIN_TELEGRAM_IDS", "NOTIFICATION_PROVIDER"} {
+		t.Run(key, func(t *testing.T) {
+			bad := maps.Clone(env)
+			bad[key] = "invalid-secret-value!"
+			_, err := Load(getenvFrom(bad))
+			if err == nil || !strings.Contains(err.Error(), key) {
+				t.Fatalf("missing validation: %v", err)
+			}
+			if strings.Contains(err.Error(), "invalid-secret-value!") {
+				t.Fatal("secret leaked")
+			}
+		})
+	}
+}

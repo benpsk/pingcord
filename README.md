@@ -53,6 +53,106 @@ Discord /admin ──── POST /discord/interactions ─▶ Caddy (HTTPS) ─�
                                                                     └─ GitHub API: org/team members, username → ID
 ```
 
+## Telegram
+
+pingcord can deliver to Telegram instead of Discord. Set
+`NOTIFICATION_PROVIDER=telegram`; the default remains `discord`. One running
+instance delivers to one platform. Telegram sends each selected person a private
+message and keeps the same GitHub recipient selection, team expansion, watcher
+levels, ignores, and bot/self filters.
+No GitHub Actions workflow is needed to send notifications.
+
+### Set up the bot
+
+1. Open [@BotFather](https://t.me/BotFather), send `/newbot`, and save the token
+   as `TELEGRAM_BOT_TOKEN`. Every team member, including admins, must open a
+   private conversation with the bot and press **Start** before it can DM them.
+   No Telegram group is needed.
+2. Before registering a Telegram webhook, send `/start` privately to your bot,
+   then run:
+
+   ```sh
+   curl "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/getUpdates"
+   ```
+
+   Find your `message.from.id` and set `ADMIN_TELEGRAM_IDS` to your positive
+   numeric user ID. For multiple admins use a comma-separated list. These are
+   user IDs, not usernames. `getUpdates` cannot be used while a Telegram webhook
+   is registered; after setup, `/whoami` privately shows each person's user ID.
+3. Configure the server with your existing GitHub settings plus:
+
+   ```dotenv
+   NOTIFICATION_PROVIDER=telegram
+   TELEGRAM_BOT_TOKEN=123456789:your-token
+   TELEGRAM_WEBHOOK_SECRET=your-random-secret
+   ADMIN_TELEGRAM_IDS=123456789
+   DB_PATH=/var/lib/pingcord/pingcord-telegram.db
+   ```
+
+   Generate the webhook secret with `openssl rand -hex 32`. For Docker use
+   `/data/pingcord-telegram.db`. Discord settings are unnecessary in Telegram
+   mode. **Use a new database when switching platforms**: an existing Discord
+   database is protected against being reused as Telegram identities. Link users
+   and recreate watches in the new database; your Discord database is preserved.
+4. Deploy the updated binary and Caddy configuration, then register Telegram's
+   webhook (export the variables below in your local shell first):
+
+   ```sh
+   curl --fail-with-body -X POST \
+     "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/setWebhook" \
+     --data-urlencode "url=https://YOUR_DOMAIN/telegram/webhook" \
+     --data-urlencode "secret_token=${TELEGRAM_WEBHOOK_SECRET}" \
+     --data-urlencode 'allowed_updates=["message"]' \
+     --data-urlencode 'max_connections=1'
+   ```
+
+   Check that Telegram returns `"ok": true`. The secret authenticates incoming
+   Telegram updates. GitHub continues posting to `/github/webhook` with its
+   existing GitHub webhook secret and event selections. If using a different
+   reverse proxy, expose `/telegram/webhook` alongside `/github/webhook`.
+5. Send `/whoami` privately to the bot to verify connectivity. Admins manage
+   links and watches in a **private conversation with the bot**:
+
+   ```text
+   /admin link 234567890 alice-dev
+   /admin unlinked
+   /admin list
+   /admin watch 234567890 new-prs *
+   /admin watch 234567890 all api
+   /admin unwatch 234567890 api
+   /admin ignore alice-dev
+   /admin unignore alice-dev
+   /admin unlink 234567890
+   ```
+
+   `/admin link` takes a Telegram user ID followed by a GitHub login. Watch levels
+   are `new-prs`, `prs`, and `all`; a repository is required (`*` means the whole
+   org). `/start` and `/help` show command syntax; `/whoami` shows user and chat
+   IDs. Only `ADMIN_TELEGRAM_IDS` can run admin commands. Group admin commands
+   are ignored to keep account management private.
+
+Each GitHub event produces a separate private message for each selected linked
+user. Each person sees their own notification reasons and the event context.
+Users who are not involved receive no GitHub notification. Watchers receive
+private messages for the activity they watch. Context from GitHub is escaped;
+no group mention settings are involved. Users can still mute or block the bot.
+
+Admin commands, help, and `/whoami` work only in private conversations with the
+bot. Audit messages go silently to the configured admins' private chats, not to
+all linked users. Unlike Discord, these text commands have no field autocomplete.
+`TELEGRAM_CHAT_ID` is no longer used; remove it from existing configurations.
+Existing Telegram user links and watches can be kept when upgrading from group
+mode; only a switch from Discord requires a separate database.
+
+If a recipient has not started the bot or has blocked it, Telegram rejects their
+DM. pingcord continues attempting the other recipients, reports a failed GitHub
+delivery, and logs the failed user ID. Ask that person to start or unblock the
+bot, then use **Redeliver** in GitHub. Redelivery can duplicate messages for
+people who already received them; outbound messages are not an exactly-once
+queue. Check Telegram's `getWebhookInfo` for inbound command delivery errors.
+Recent command update IDs and results are cached in memory; after a restart, a
+retried update may repeat an audit message.
+
 ## Who gets pinged
 
 | GitHub activity | Pinged |
@@ -199,12 +299,16 @@ startup and lists every problem it finds.
 | `GITHUB_WEBHOOK_SECRET` | ✓ | Shared secret for webhook signatures (≥ 16 chars) |
 | `GITHUB_TOKEN` | ✓ | Fine-grained PAT with org *Members: Read-only*, all repositories (*Metadata: Read-only*) |
 | `GITHUB_ORG` | ✓ | Organization login |
-| `DISCORD_WEBHOOK_URL` | ✓ | Channel webhook for notifications |
-| `DISCORD_APP_ID` | ✓ | Discord application ID |
-| `DISCORD_PUBLIC_KEY` | ✓ | Application public key (verifies slash-command requests) |
-| `DISCORD_BOT_TOKEN` | ✓ | Used only to register `/admin` |
-| `DISCORD_GUILD_ID` | ✓ | Your Discord server ID |
-| `ADMIN_DISCORD_IDS` | ✓ | Comma-separated Discord user IDs allowed to use `/admin` |
+| `NOTIFICATION_PROVIDER` | | `discord` (default) or `telegram` |
+| `TELEGRAM_BOT_TOKEN` | Telegram | BotFather bot token |
+| `TELEGRAM_WEBHOOK_SECRET` | Telegram | 16–256 letters, digits, underscores or hyphens |
+| `ADMIN_TELEGRAM_IDS` | Telegram | Comma-separated positive admin user IDs; receive silent audit DMs |
+| `DISCORD_WEBHOOK_URL` | Discord | Channel webhook for notifications |
+| `DISCORD_APP_ID` | Discord | Discord application ID |
+| `DISCORD_PUBLIC_KEY` | Discord | Application public key (verifies slash-command requests) |
+| `DISCORD_BOT_TOKEN` | Discord | Used only to register `/admin` |
+| `DISCORD_GUILD_ID` | Discord | Your Discord server ID |
+| `ADMIN_DISCORD_IDS` | Discord | Comma-separated Discord user IDs allowed to use `/admin` |
 | `LISTEN_ADDR` | | Listen address, e.g. `127.0.0.1:8090` (overrides `PORT`; set by the systemd unit) |
 | `PORT` | | Listen port on all interfaces (default `8080`) |
 | `DB_PATH` | | SQLite path (default `/data/pingcord.db`; the systemd unit uses `/var/lib/pingcord/pingcord.db`) |

@@ -130,3 +130,20 @@ GitHub org webhook, and link your team with `/admin`.
 | Back up | copy `/var/lib/pingcord/pingcord.db` (links and ignores; everything else is rebuilt) |
 | Change secrets | edit `/etc/pingcord/pingcord.env`, then `sudo systemctl restart pingcord` |
 | Unit file changed | the deploy log warns; copy `/opt/pingcord/release/pingcord.service` to `/etc/systemd/system/`, then `daemon-reload` and restart |
+
+## Telegram deployments
+
+For Telegram instead of Discord, follow the [Telegram setup](../README.md#telegram).
+Set `NOTIFICATION_PROVIDER=telegram` and the Telegram variables in
+`/etc/pingcord/pingcord.env`, with
+`DB_PATH=/var/lib/pingcord/pingcord-telegram.db` when switching an existing
+Discord installation. Deploy the updated Caddy site too: it now permits
+`/telegram/webhook`. Register the Telegram webhook after restarting the server.
+The GitHub webhook URL and signature secret stay the same. Telegram mode does
+not register Discord commands or require any Discord credentials.
+
+Telegram notifications are private DMs to selected linked user IDs. No group or
+`TELEGRAM_CHAT_ID` is required. All recipients and admins must start the bot
+privately before delivery. Existing Telegram links and watches can be retained
+when upgrading from group delivery. Audit messages go privately and silently to
+`ADMIN_TELEGRAM_IDS`.

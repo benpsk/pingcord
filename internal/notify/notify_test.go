@@ -500,3 +500,71 @@ func TestHandleWatcherErrors(t *testing.T) {
 		t.Fatalf("recording the repo is best effort: err=%v sent=%d", err, len(snd.sent))
 	}
 }
+
+type directSender struct {
+	fakeSender
+	ids      []string
+	messages []discord.Message
+	failID   string
+}
+
+func (s *directSender) SendDirect(_ context.Context, msg discord.Message, id string) error {
+	s.ids = append(s.ids, id)
+	s.messages = append(s.messages, msg)
+	if id == s.failID {
+		return errors.New("recipient blocked bot")
+	}
+	return nil
+}
+
+func TestDirectDeliveryIsolatesRecipientsAndContinuesAfterFailure(t *testing.T) {
+	for _, failID := range []string{"", "100"} {
+		t.Run("failed recipient "+failID, func(t *testing.T) {
+			n, _, _, _ := setup()
+			sender := &directSender{failID: failID}
+			n.sender = sender
+			result, err := n.Handle(context.Background(), prComment())
+			if (err != nil) != (failID != "") {
+				t.Fatalf("error = %v", err)
+			}
+			if !reflect.DeepEqual(sender.ids, []string{"100", "300", "400"}) || len(sender.sent) != 0 {
+				t.Fatalf("wrong delivery paths: %+v", sender)
+			}
+			for i, msg := range sender.messages {
+				if !reflect.DeepEqual(msg.AllowedMentions.Users, []string{sender.ids[i]}) {
+					t.Fatal("recipient list leaked", msg)
+				}
+				for _, other := range sender.ids {
+					if other != sender.ids[i] && strings.Contains(msg.Content, "<@"+other+">") {
+						t.Fatal("another recipient's reasons leaked", msg.Content)
+					}
+				}
+			}
+			want := []string{"100", "300", "400"}
+			if failID != "" {
+				want = want[1:]
+			}
+			if !reflect.DeepEqual(result.Pinged, want) {
+				t.Fatalf("successful deliveries: %v, want %v", result.Pinged, want)
+			}
+		})
+	}
+}
+
+func TestDirectDeliveryDoesNotInheritSharedChannelRecipientLimit(t *testing.T) {
+	n, st, _, _ := setup()
+	sender := &directSender{}
+	n.sender = sender
+	ev := prComment()
+	ev.Targets = nil
+	ev.Mentions = mention.Result{}
+	for i := int64(10); i < 160; i++ {
+		id := fmt.Sprint(i)
+		st.links[i] = id
+		ev.Targets = append(ev.Targets, githubhook.Target{User: githubhook.User{ID: i, Login: "user" + id}, Reason: githubhook.ReasonAssigned})
+	}
+	result, err := n.Handle(context.Background(), ev)
+	if err != nil || len(result.Pinged) != 150 || len(sender.ids) != 150 {
+		t.Fatalf("deliveries = %d; error = %v", len(result.Pinged), err)
+	}
+}

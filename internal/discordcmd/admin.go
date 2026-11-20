@@ -2,6 +2,7 @@ package discordcmd
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"regexp"
@@ -28,6 +29,24 @@ func (h *Handler) command(ctx context.Context, in *interaction) string {
 	admin := in.callerID()
 	h.log.InfoContext(ctx, "admin command", "caller", admin, "subcommand", sub)
 
+	return h.execute(ctx, in, admin, sub, opts)
+}
+
+// Execute runs a command from another authenticated transport. The caller must
+// be the verified platform user ID; the configured admin allowlist is checked.
+func (h *Handler) Execute(ctx context.Context, caller, sub string, values map[string]string) string {
+	if !h.cfg.IsAdmin(caller) {
+		return msgNotAdmin
+	}
+	var opts []option
+	for name, value := range values {
+		b, _ := json.Marshal(value)
+		opts = append(opts, option{Name: name, Value: b})
+	}
+	return h.execute(ctx, &interaction{}, caller, sub, opts)
+}
+
+func (h *Handler) execute(ctx context.Context, in *interaction, admin, sub string, opts []option) string {
 	switch sub {
 	case "link":
 		return h.link(ctx, in, admin, opts)

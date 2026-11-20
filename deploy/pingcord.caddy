@@ -6,7 +6,7 @@
 	}
 
 	# Only pingcord's endpoints; everything else is 404.
-	@pingcord path /github/webhook /discord/interactions /healthz
+	@pingcord path /github/webhook /discord/interactions /telegram/webhook /healthz
 	handle @pingcord {
 		reverse_proxy 127.0.0.1:8090
 	}

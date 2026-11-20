@@ -32,6 +32,8 @@ var (
 
 // Config is the fully validated runtime configuration.
 type Config struct {
+	Provider        string
+	Telegram        Telegram
 	Addr            string
 	DBPath          string
 	LogLevel        slog.Level
@@ -59,6 +61,14 @@ type Discord struct {
 	APIBaseURL string
 }
 
+// Telegram holds Telegram delivery and inbound webhook settings.
+type Telegram struct {
+	BotToken      string
+	WebhookSecret string
+	AdminIDs      []string
+	APIBaseURL    string
+}
+
 // IsAdmin reports whether the Discord user ID is a configured admin.
 func (c Config) IsAdmin(discordID string) bool {
 	return slices.Contains(c.AdminDiscordIDs, discordID)
@@ -69,25 +79,45 @@ func Load(getenv func(string) string) (Config, error) {
 	l := loader{getenv: getenv}
 
 	cfg := Config{
-		Addr:            l.listenAddr(),
-		DBPath:          l.optional("DB_PATH", defaultDBPath),
-		LogLevel:        l.logLevel("LOG_LEVEL"),
-		IgnoreBots:      l.boolean("IGNORE_BOTS", true),
-		AdminDiscordIDs: l.snowflakeList("ADMIN_DISCORD_IDS"),
+		Addr:       l.listenAddr(),
+		DBPath:     l.optional("DB_PATH", defaultDBPath),
+		LogLevel:   l.logLevel("LOG_LEVEL"),
+		IgnoreBots: l.boolean("IGNORE_BOTS", true),
+		Provider:   l.optional("NOTIFICATION_PROVIDER", "discord"),
 		GitHub: GitHub{
 			WebhookSecret: []byte(l.secret("GITHUB_WEBHOOK_SECRET", minWebhookSecretLen)),
 			Token:         l.required("GITHUB_TOKEN"),
 			Org:           l.matching("GITHUB_ORG", orgRe, "must be a valid GitHub organization login"),
 			APIBaseURL:    l.apiURL("GITHUB_API_URL", defaultGitHubAPIURL),
 		},
-		Discord: Discord{
+	}
+	switch cfg.Provider {
+	case "discord":
+		cfg.AdminDiscordIDs = l.snowflakeList("ADMIN_DISCORD_IDS")
+		cfg.Discord = Discord{
 			WebhookURL: l.discordWebhookURL("DISCORD_WEBHOOK_URL"),
 			AppID:      l.matching("DISCORD_APP_ID", snowflakeRe, "must be a Discord ID (17-20 digits)"),
 			PublicKey:  l.publicKey("DISCORD_PUBLIC_KEY"),
 			BotToken:   l.required("DISCORD_BOT_TOKEN"),
 			GuildID:    l.matching("DISCORD_GUILD_ID", snowflakeRe, "must be a Discord ID (17-20 digits)"),
 			APIBaseURL: l.apiURL("DISCORD_API_URL", defaultDiscordAPIURL),
-		},
+		}
+	case "telegram":
+		cfg.Telegram = Telegram{
+			BotToken:      l.matching("TELEGRAM_BOT_TOKEN", regexp.MustCompile(`^[0-9]+:[A-Za-z0-9_-]+$`), "must be a bot token from BotFather"),
+			WebhookSecret: l.matching("TELEGRAM_WEBHOOK_SECRET", regexp.MustCompile(`^[A-Za-z0-9_-]{16,256}$`), "must be 16-256 letters, digits, underscores or hyphens"),
+			APIBaseURL:    l.apiURL("TELEGRAM_API_URL", "https://api.telegram.org"),
+		}
+		for part := range strings.SplitSeq(l.required("ADMIN_TELEGRAM_IDS"), ",") {
+			id := strings.TrimSpace(part)
+			if n, err := strconv.ParseInt(id, 10, 64); err != nil || n <= 0 || strconv.FormatInt(n, 10) != id {
+				l.fail("ADMIN_TELEGRAM_IDS", "must contain positive numeric user IDs")
+			} else {
+				cfg.Telegram.AdminIDs = append(cfg.Telegram.AdminIDs, id)
+			}
+		}
+	default:
+		l.fail("NOTIFICATION_PROVIDER", "must be discord or telegram")
 	}
 
 	if err := errors.Join(l.errs...); err != nil {

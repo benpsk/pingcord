@@ -7,6 +7,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"slices"
 	"time"
 
 	"github.com/benpsk/pingcord/internal/config"
@@ -16,6 +17,7 @@ import (
 	"github.com/benpsk/pingcord/internal/notify"
 	"github.com/benpsk/pingcord/internal/server"
 	"github.com/benpsk/pingcord/internal/store"
+	"github.com/benpsk/pingcord/internal/telegram"
 )
 
 const (
@@ -38,30 +40,50 @@ func serve(ctx context.Context, getenv func(string) string, logOut io.Writer) er
 	}
 	defer func() { _ = st.Close() }()
 
+	if err := st.BindProvider(ctx, cfg.Provider); err != nil {
+		return err
+	}
+
 	gh := githubapi.NewClient(cfg.GitHub.APIBaseURL, cfg.GitHub.Token, cfg.GitHub.Org, nil)
 	dir := githubapi.NewDirectory(gh, st, githubapi.WithLogger(log))
-	sender := discord.NewWebhookClient(cfg.Discord.WebhookURL, nil)
+	var sender notify.Sender
+	var interactions http.Handler
+	var telegramHandler http.Handler
+	var commands *discordcmd.Handler
+	if cfg.Provider == "telegram" {
+		t := cfg.Telegram
+		client := telegram.NewClient(t.APIBaseURL, t.BotToken, t.AdminIDs, nil)
+		sender = client
+		commands = discordcmd.NewHandler(discordcmd.Config{
+			Org:     cfg.GitHub.Org,
+			IsAdmin: func(id string) bool { return slices.Contains(t.AdminIDs, id) },
+		}, st, dir, client, discordcmd.WithLogger(log))
+		telegramHandler = telegram.NewHandler(t.WebhookSecret, client, commands, log)
+	} else {
+		client := discord.NewWebhookClient(cfg.Discord.WebhookURL, nil)
+		sender = client
+		commands = discordcmd.NewHandler(discordcmd.Config{
+			PublicKey: cfg.Discord.PublicKey,
+			GuildID:   cfg.Discord.GuildID,
+			Org:       cfg.GitHub.Org,
+			IsAdmin:   cfg.IsAdmin,
+		}, st, dir, client, discordcmd.WithLogger(log))
+		interactions = commands
+		go registerCommands(ctx, cfg.Discord, log)
+	}
 	notifier := notify.New(st, dir, sender, notify.WithLogger(log), notify.WithIgnoreBots(cfg.IgnoreBots))
-
-	interactions := discordcmd.NewHandler(discordcmd.Config{
-		PublicKey: cfg.Discord.PublicKey,
-		GuildID:   cfg.Discord.GuildID,
-		Org:       cfg.GitHub.Org,
-		IsAdmin:   cfg.IsAdmin,
-	}, st, dir, sender, discordcmd.WithLogger(log))
-
 	go checkGitHubAccess(ctx, gh, dir, log)
-	go registerCommands(ctx, cfg.Discord, log)
 
 	handler := server.NewHandler(server.Options{
 		WebhookSecret: cfg.GitHub.WebhookSecret,
 		Org:           cfg.GitHub.Org,
 		Events:        notifier,
 		Interactions:  interactions,
+		Telegram:      telegramHandler,
 		Logger:        log,
 	})
 	err = listen(ctx, server.NewHTTPServer(cfg.Addr, handler), log)
-	interactions.Wait() // flush in-flight audit announcements
+	commands.Wait() // flush in-flight audit announcements
 	return err
 }
 

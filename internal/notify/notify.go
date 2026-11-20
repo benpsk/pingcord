@@ -1,9 +1,10 @@
-// Package notify decides which linked Discord users a GitHub event concerns
-// and sends them a single message that pings only them.
+// Package notify selects linked users concerned by GitHub events and delivers
+// shared Discord messages or individual Telegram notifications.
 package notify
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"slices"
@@ -31,18 +32,24 @@ type Directory interface {
 	TeamMembers(ctx context.Context, team string) ([]githubapi.User, error)
 }
 
-// Sender delivers a Discord message.
+// Sender delivers a shared message or an admin audit envelope.
 type Sender interface {
 	Send(ctx context.Context, msg discord.Message) error
 }
 
+// DirectSender delivers a separate message to each selected recipient. Each
+// envelope contains only that recipient's reasons, before shared-channel caps.
+type DirectSender interface {
+	SendDirect(ctx context.Context, msg discord.Message, userID string) error
+}
+
 // Result describes what Handle did, for logging.
 type Result struct {
-	Pinged   []string // Discord IDs pinged
+	Pinged   []string // Platform user IDs successfully notified
 	Unlinked []string // GitHub logins that would have been pinged but have no link
 }
 
-// Notifier turns events into Discord pings.
+// Notifier turns events into notifications for selected platform users.
 type Notifier struct {
 	store      Store
 	dir        Directory
@@ -89,7 +96,7 @@ type recipient struct {
 }
 
 // Handle notifies everyone ev concerns. Lookup problems for individual users
-// are logged and skipped; store and Discord failures are returned so the
+// are logged and skipped; store and delivery failures are returned so the
 // webhook delivery fails and can be redelivered from GitHub.
 func (n *Notifier) Handle(ctx context.Context, ev githubhook.Event) (Result, error) {
 	if len(ev.Users) > 0 {
@@ -123,8 +130,21 @@ func (n *Notifier) Handle(ctx context.Context, ev githubhook.Event) (Result, err
 		return res, nil
 	}
 
+	if direct, ok := n.sender.(DirectSender); ok {
+		var errs []error
+		now := n.now()
+		for _, r := range recipients {
+			if err := direct.SendDirect(ctx, buildMessage(ev, []recipient{r}, now), r.discordID); err != nil {
+				errs = append(errs, fmt.Errorf("send notification to %s: %w", r.discordID, err))
+				continue
+			}
+			res.Pinged = append(res.Pinged, r.discordID)
+		}
+		return res, errors.Join(errs...)
+	}
+
 	if err := n.sender.Send(ctx, buildMessage(ev, recipients, n.now())); err != nil {
-		return res, fmt.Errorf("send discord message: %w", err)
+		return res, fmt.Errorf("send notification: %w", err)
 	}
 	for _, r := range recipients {
 		res.Pinged = append(res.Pinged, r.discordID)

@@ -40,6 +40,7 @@ type Options struct {
 	WebhookSecret         []byte
 	Org                   string // events from other orgs are ignored; empty accepts all
 	Events                EventHandler
+	Telegram              http.Handler // optional Telegram bot webhook
 	Interactions          http.Handler // optional; /discord/interactions is 404 without it
 	Logger                *slog.Logger
 	MaxConcurrentWebhooks int // default 8
@@ -70,6 +71,9 @@ func NewHandler(opts Options) http.Handler {
 	mux.Handle("POST /github/webhook", gh)
 	if opts.Interactions != nil {
 		mux.Handle("POST /discord/interactions", opts.Interactions)
+	}
+	if opts.Telegram != nil {
+		mux.Handle("POST /telegram/webhook", opts.Telegram)
 	}
 	return recoverer(log, mux)
 }
